@@ -38,17 +38,31 @@ CONFIDENCE_LEVELS = ("HIGH", "MEDIUM", "LOW")
 # verbatim, don't paraphrase" instruction for the core taxonomy rules stays
 # honored while still extending the output contract for Step 8.
 CONFIDENCE_ADDENDUM = """
-Additional output requirement (confidence flagging):
-For each classified value, append a confidence level immediately after it on
-the SAME numbered line, separated by " | ", in exactly this format:
-<number>. <Standardized Value> | <CONFIDENCE>
-Where <CONFIDENCE> is exactly one of: HIGH, MEDIUM, LOW.
-- HIGH: the input clearly and unambiguously matches one canonical value per the rules above.
-- MEDIUM: the input required judgment, an inferred equivalence, or a less common synonym.
-- LOW: the input is ambiguous, borderline between two values, or you are meaningfully uncertain.
-Example line: 3. Director | HIGH
-Do not add any other text, explanation, or punctuation beyond this format.
-The final [Total: X of Y mapped] confirmation line is unchanged and still required.
+Additional output requirements (confidence, alternatives, and reasoning):
+
+For every classified value use one of these three formats depending on confidence:
+
+HIGH — clear, unambiguous match:
+  <number>. <Standardized Value> | HIGH
+
+MEDIUM — required judgment, inferred equivalence, or less common synonym.
+  Append a one-sentence reasoning explanation:
+  <number>. <Standardized Value> | MEDIUM | Reason: <one sentence>
+
+LOW — ambiguous, borderline, or meaningfully uncertain.
+  Append ranked alternatives (most to least probable, comma-separated) AND a one-sentence reasoning explanation:
+  <number>. <Standardized Value> | LOW | Alternatives: <Alt1>, <Alt2> | Reason: <one sentence>
+
+Examples:
+  1. Director | HIGH
+  2. Executive Management | MEDIUM | Reason: "Managing Director" is primarily executive but could be Board Member in some jurisdictions
+  3. Board Member | LOW | Alternatives: Director, Executive Management | Reason: "Non-Executive" prefix and board meeting context make this ambiguous between Board Member and Director
+
+Rules:
+- Alternatives must be drawn only from the canonical values listed in the taxonomy above.
+- Alternatives are ranked most probable first.
+- Do not add any other text, explanation, or punctuation beyond these formats.
+- The final [Total: X of Y mapped] confirmation line is unchanged and still required.
 """.strip()
 
 
@@ -63,6 +77,8 @@ class ClassificationResult:
     raw_value: str
     standardized_value: str
     confidence: str = ""  # HIGH / MEDIUM / LOW, or "" if not parsed/applicable
+    alternatives: list[str] = field(default_factory=list)  # LOW only, ranked most→least probable
+    reasoning: str = ""  # MEDIUM and LOW only
 
     @property
     def needs_review(self) -> bool:
@@ -88,6 +104,8 @@ class BatchResult:
                 "raw_value": r.raw_value,
                 "standardized_value": r.standardized_value,
                 "confidence": r.confidence,
+                "alternatives": r.alternatives,
+                "reasoning": r.reasoning,
             }
             for r in self.results
         ]
@@ -113,6 +131,16 @@ _NUMBERED_LINE = re.compile(r"^\s*(\d+)[.)]\s*(.+?)\s*$")
 _OUTPUT_WITH_CONFIDENCE = re.compile(
     r"^\s*(\d+)[.)]\s*(.+?)\s*\|\s*(HIGH|MEDIUM|LOW)\s*$", re.IGNORECASE
 )
+# LOW: "3. Board Member | LOW | Alternatives: Director, Executive Management | Reason: ..."
+_OUTPUT_WITH_LOW = re.compile(
+    r"^\s*(\d+)[.)]\s*(.+?)\s*\|\s*LOW\s*\|\s*Alternatives:\s*(.+?)\s*\|\s*Reason:\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
+# MEDIUM: "2. Executive Management | MEDIUM | Reason: ..."
+_OUTPUT_WITH_MEDIUM = re.compile(
+    r"^\s*(\d+)[.)]\s*(.+?)\s*\|\s*MEDIUM\s*\|\s*Reason:\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 _TOTAL_LINE = re.compile(r"\[\s*Total:\s*(\d+)\s+of\s+(\d+)\s+mapped\s*\]", re.IGNORECASE)
 
 
@@ -124,36 +152,68 @@ def parse_response(text: str, raw_values: list[str]) -> BatchResult:
     or out-of-range index is recorded as a warning rather than silently
     producing a misaligned column.
 
-    Each line is expected as "<n>. <value> | <CONFIDENCE>" (Step 8's extended
-    contract). A line with a value but no parseable confidence tag still
-    counts as answered — the value is kept and confidence is left "" — but is
-    flagged via ClassificationResult.needs_review and recorded as a warning,
-    since a missing confidence tag is itself a signal something's off.
+    Three formats are accepted (most specific tried first):
+      LOW:    "<n>. <value> | LOW | Alternatives: <a>, <b> | Reason: <text>"
+      MEDIUM: "<n>. <value> | MEDIUM | Reason: <text>"
+      HIGH:   "<n>. <value> | HIGH"
+    A line with a value but no parseable confidence still counts as answered
+    but is flagged via ClassificationResult.needs_review.
     """
     expected = len(raw_values)
     warnings: list[str] = []
 
-    # Collect index -> (value, confidence) from every numbered line.
-    parsed: dict[int, tuple[str, str]] = {}
+    # index -> (value, confidence, alternatives, reasoning)
+    parsed: dict[int, tuple[str, str, list[str], str]] = {}
+
     for line in text.splitlines():
         if _TOTAL_LINE.search(line):
-            continue  # handled separately below
+            continue
+
+        # Try LOW with alternatives + reason first (most specific).
+        m = _OUTPUT_WITH_LOW.match(line)
+        if m:
+            idx = int(m.group(1))
+            value = m.group(2).strip()
+            alternatives = [a.strip() for a in m.group(3).split(",") if a.strip()]
+            reasoning = m.group(4).strip()
+            if idx in parsed:
+                warnings.append(f"duplicate output for item {idx}")
+            else:
+                parsed[idx] = (value, "LOW", alternatives, reasoning)
+            continue
+
+        # Try MEDIUM with reason.
+        m = _OUTPUT_WITH_MEDIUM.match(line)
+        if m:
+            idx = int(m.group(1))
+            value = m.group(2).strip()
+            reasoning = m.group(3).strip()
+            if idx in parsed:
+                warnings.append(f"duplicate output for item {idx}")
+            else:
+                parsed[idx] = (value, "MEDIUM", [], reasoning)
+            continue
+
+        # Plain confidence (HIGH, or degraded LOW/MEDIUM without extras).
         m = _OUTPUT_WITH_CONFIDENCE.match(line)
         if m:
             idx = int(m.group(1))
             value = m.group(2).strip()
             confidence = m.group(3).upper()
-        else:
-            m = _NUMBERED_LINE.match(line)
-            if not m:
-                continue
+            if idx in parsed:
+                warnings.append(f"duplicate output for item {idx}")
+            else:
+                parsed[idx] = (value, confidence, [], "")
+            continue
+
+        # Numbered line with no confidence tag at all.
+        m = _NUMBERED_LINE.match(line)
+        if m:
             idx = int(m.group(1))
             value = m.group(2).strip()
-            confidence = ""
-            warnings.append(f"item {idx}: no confidence tag parsed")
-        if idx in parsed:
-            warnings.append(f"duplicate output for item {idx}")
-        parsed[idx] = (value, confidence)
+            if idx not in parsed:
+                warnings.append(f"item {idx}: no confidence tag parsed")
+                parsed[idx] = (value, "", [], "")
 
     # Reported total, if the model included the confirmation line.
     total_reported: int | None = None
@@ -172,12 +232,15 @@ def parse_response(text: str, raw_values: list[str]) -> BatchResult:
         entry = parsed.get(i)
         if entry is None:
             warnings.append(f"no output returned for item {i}")
-            value, confidence = "", ""  # keep alignment; blank marks the gap
+            results.append(ClassificationResult(
+                index=i, raw_value=raw, standardized_value="", confidence=""
+            ))
         else:
-            value, confidence = entry
-        results.append(
-            ClassificationResult(index=i, raw_value=raw, standardized_value=value, confidence=confidence)
-        )
+            value, confidence, alternatives, reasoning = entry
+            results.append(ClassificationResult(
+                index=i, raw_value=raw, standardized_value=value,
+                confidence=confidence, alternatives=alternatives, reasoning=reasoning,
+            ))
 
     extra = sorted(k for k in parsed if k < 1 or k > expected)
     if extra:
@@ -271,9 +334,18 @@ class MockClaudeClient:
     def __init__(self, field_key: str = "positions_designations"):
         import fields as _fields  # local import avoids a load-time cycle
 
+        spec = _fields.get(field_key)
         self.field_key = field_key
-        self._catch_all = _fields.get(field_key).standard_values[-1]
+        self._catch_all = spec.standard_values[-1]
+        self._standard_values = spec.standard_values
         self.name = f"MOCK (simulated — no API key used) [{field_key}]"
+
+    def _mock_alternatives(self, exclude: str | None = None) -> list[str]:
+        """First 2 non-catch-all standard values (excluding the primary result) as generic alternatives."""
+        return [
+            v for v in self._standard_values
+            if v != self._catch_all and v != exclude
+        ][:2]
 
     # --- Positions / Designations: checked in this order, first hit wins.
     # Mirrors the prompt's priority (Board > Director > Exec > Owner > Auth
@@ -403,7 +475,7 @@ class MockClaudeClient:
     }
     _UK_STYLE_BOARD_TRIGGERS = ["ceo", "chief executive officer", "chief executive", "managing director"]
 
-    def _classify_one(self, raw: str) -> tuple[str, str]:
+    def _classify_one(self, raw: str) -> tuple[str, str, list[str], str]:
         text = " ".join(str(raw).splitlines()).strip()
         country = ""
         m = _COUNTRY_PREFIX.match(text)
@@ -412,19 +484,36 @@ class MockClaudeClient:
             text = text[m.end():]
         t = text.lower()
         if not t:
-            return self._catch_all, "LOW"
+            return (
+                self._catch_all, "LOW",
+                self._mock_alternatives(),
+                "Empty input — no classification possible",
+            )
         if self.field_key == "positions_designations":
             if country in self._UK_STYLE_BOARD_COUNTRIES and any(
                 _matches_keyword(t, k) for k in self._UK_STYLE_BOARD_TRIGGERS
             ):
-                return "Board Member", "HIGH"
-            return self._classify_positions(t)
-        if self.field_key == "business_legal_form":
-            return self._classify_blf(t)
-        # No heuristic modeled for this field yet — honest fallback, not a
-        # guess. See the class docstring. Always LOW: the mock has no basis
-        # for confidence here.
-        return self._catch_all, "LOW"
+                return "Board Member", "HIGH", [], ""
+            value, confidence = self._classify_positions(t)
+        elif self.field_key == "business_legal_form":
+            value, confidence = self._classify_blf(t)
+        else:
+            # No heuristic modeled for this field — honest fallback.
+            # See class docstring.
+            return (
+                self._catch_all, "LOW",
+                self._mock_alternatives(),
+                "No keyword heuristic implemented for this field in simulation — "
+                "real Claude would apply the full prompt taxonomy",
+            )
+        if confidence == "LOW":
+            return (
+                value, "LOW",
+                self._mock_alternatives(exclude=value),
+                "No keyword rule matched in simulation — "
+                "real Claude would analyse the full taxonomy context",
+            )
+        return value, confidence, [], ""
 
     def complete(self, system_prompt: str, user_message: str) -> str:
         # Read back the numbered inputs exactly as a real model would see them.
@@ -436,8 +525,16 @@ class MockClaudeClient:
 
         out_lines = []
         for idx, val in inputs:
-            value, confidence = self._classify_one(val)
-            out_lines.append(f"{idx}. {value} | {confidence}")
+            value, confidence, alternatives, reasoning = self._classify_one(val)
+            if confidence == "LOW":
+                alts_str = ", ".join(alternatives)
+                out_lines.append(
+                    f"{idx}. {value} | LOW | Alternatives: {alts_str} | Reason: {reasoning}"
+                )
+            elif confidence == "MEDIUM":
+                out_lines.append(f"{idx}. {value} | MEDIUM | Reason: {reasoning}")
+            else:
+                out_lines.append(f"{idx}. {value} | {confidence}")
         out_lines.append(f"[Total: {len(inputs)} of {len(inputs)} mapped]")
         return "\n".join(out_lines)
 
