@@ -26,6 +26,7 @@ from classifier import MockClaudeClient, RealClaudeClient
 from jira_ticket import build_ticket_text, find_countries
 from standardize_file import (
     NEEDS_REVIEW_COLUMN,
+    REVIEW_REASON_COLUMN,
     STANDARDIZED_COLUMN,
     detect_country_column,
     detect_value_column,
@@ -169,8 +170,9 @@ if run_clicked and uploaded is not None:
     if stats.flagged_count:
         st.warning(
             f"{stats.flagged_count} row(s) flagged in the {NEEDS_REVIEW_COLUMN!r} column "
-            "(low/missing confidence, blank input, or API failure) — review these before "
-            "treating the rest as final."
+            f"(LOW/missing confidence, blank input, or API failure) — check the "
+            f"{NEEDS_REVIEW_COLUMN!r} column for ranked alternatives and {REVIEW_REASON_COLUMN!r} "
+            "for reasoning before treating the rest as final."
         )
     if stats.failed_batches:
         st.error(
@@ -181,9 +183,32 @@ if run_clicked and uploaded is not None:
     st.subheader("Result")
     st.dataframe(result_df, width="stretch")
 
+    # Export column selection — our three new columns are always included;
+    # original columns are opt-in with smart defaults.
+    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    original_cols = [c for c in result_df.columns if c not in our_cols]
+
+    # Default: raw value column + country column (if detected) + "Field" column (if present).
+    default_keep = [raw_col]
+    if country_col:
+        default_keep.insert(0, country_col)
+    field_col_match = next(
+        (c for c in original_cols if str(c).strip().lower() == "field"), None
+    )
+    if field_col_match and field_col_match not in default_keep:
+        default_keep.append(field_col_match)
+
+    selected_original = st.multiselect(
+        "Columns to include in export",
+        options=original_cols,
+        default=[c for c in default_keep if c in original_cols],
+        help="Standardized Value, Needs Review, and Review Reason are always included.",
+    )
+    export_df = result_df[selected_original + our_cols]
+
     out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
     out_path = config.OUTPUT_DIR / out_name
-    result_df.to_excel(out_path, index=False)
+    export_df.to_excel(out_path, index=False)
 
     with open(out_path, "rb") as fh:
         st.download_button(
