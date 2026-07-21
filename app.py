@@ -35,6 +35,31 @@ from standardize_file import (
 )
 
 st.set_page_config(page_title="Standardization Tool", layout="wide")
+
+st.markdown("""
+<style>
+/* Sidebar — dark green background with white text */
+section[data-testid="stSidebar"] {
+    background-color: #0F2A25 !important;
+}
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] div {
+    color: #FFFFFF !important;
+}
+
+/* Info / highlight banners */
+div[data-testid="stAlert"] {
+    background-color: #DCE9DD !important;
+    border-left-color: #1F6E5C !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Standardization Tool")
 st.caption(
     "Upload a raw-value file, pick which field/taxonomy applies, and get back "
@@ -181,7 +206,6 @@ if run_clicked and uploaded is not None:
         )
 
     st.subheader("Result")
-    st.dataframe(result_df, width="stretch")
 
     # Export column selection — our three new columns are always included;
     # original columns are opt-in with smart defaults.
@@ -205,6 +229,8 @@ if run_clicked and uploaded is not None:
         help="Standardized Value, Needs Review, and Review Reason are always included.",
     )
     export_df = result_df[selected_original + our_cols]
+
+    st.dataframe(export_df, width="stretch")
 
     out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
     out_path = config.OUTPUT_DIR / out_name
