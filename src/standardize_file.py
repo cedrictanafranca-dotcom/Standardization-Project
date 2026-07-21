@@ -69,12 +69,20 @@ import run_log
 from classifier import CONFIDENCE_ADDENDUM, MockClaudeClient, RealClaudeClient, classify_values
 from fault_injection import FlakyClient, rate_limit_error, server_error
 from jira_ticket import build_ticket_text, find_countries
+from master_lookup import load_lookup
 from retry import RetryExhaustedError, call_with_retry
+
+# Load the master lookup once at module import time.  Returns an empty dict
+# gracefully if data/master_lookup.json doesn't exist yet — the pipeline
+# continues without it and sends everything to the API.
+_MASTER_LOOKUP = load_lookup()
 
 STANDARDIZED_COLUMN = "Standardized Value"
 # Column header AND the flag value written into it when a row is flagged
 # (blank otherwise) — a single constant serves both, by design.
 NEEDS_REVIEW_COLUMN = "Needs Review"
+# Reasoning shown for MEDIUM and LOW rows; blank for HIGH.
+REVIEW_REASON_COLUMN = "Review Reason"
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_DELAY = 1.0
@@ -105,6 +113,7 @@ class Stats:
     batches: int
     batch_size: int
     api_calls_saved: int  # rows that did NOT need an API call (dupes + blanks)
+    lookup_hits: int = 0   # unique values resolved from the master lookup (no API call)
     flagged_count: int = 0  # rows marked Needs Review (LOW/missing confidence, blanks, failures)
     retries_used: int = 0
     failed_batches: list[run_log.BatchFailure] = field(default_factory=list)
@@ -194,6 +203,7 @@ def standardize_dataframe(
     retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
     country_dependent: bool = False,
     country_column: str | None = None,
+    field_key: str | None = None,
 ) -> tuple[pd.DataFrame, Stats]:
     """Add a standardized-value column next to `column`, everything else intact.
 
@@ -222,9 +232,29 @@ def standardize_dataframe(
     # 3.4 duplicates: classify each unique non-blank (country, value) pair once.
     unique_nonblank = list(dict.fromkeys(k for k in keys if k[1] != ""))
 
+    # Pre-flight: resolve as many values as possible from the master lookup
+    # before touching the API.  Lookup hits get HIGH confidence (known-good
+    # prior classifications) and are never flagged for review.
+    field_lookup = _MASTER_LOOKUP.get(field_key) if field_key else None
+    # (country, raw_value) -> (std_value, confidence, alternatives, reasoning)
+    mapping: dict[tuple[str, str], tuple[str, str, list, str]] = {}
+    to_classify: list[tuple[str, str]] = []
+    lookup_hits = 0
+
+    if field_lookup is not None:
+        for k in unique_nonblank:
+            country, raw = k
+            result = field_lookup.get(raw, country)
+            if result is not None:
+                # Known-good mapping: HIGH confidence, no alternatives, no reasoning needed.
+                mapping[k] = (result, "HIGH", [], "")
+                lookup_hits += 1
+            else:
+                to_classify.append(k)
+    else:
+        to_classify = unique_nonblank
+
     # 4.1 chunking: never send the whole file as one call.
-    # (country, value) -> (standardized_value, confidence); "" confidence flags for review.
-    mapping: dict[tuple[str, str], tuple[str, str]] = {}
     warnings: list[str] = []
     failed_batches: list[run_log.BatchFailure] = []
     n_batches = 0
@@ -238,7 +268,7 @@ def standardize_dataframe(
             f"({type(exc).__name__}: {exc}) — waiting {delay:.1f}s before retry"
         )
 
-    for chunk in _chunks(unique_nonblank, batch_size):
+    for chunk in _chunks(to_classify, batch_size):
         n_batches += 1
         # What the model actually sees: country-prefixed when applicable,
         # otherwise identical to the old plain-value framing.
@@ -264,7 +294,7 @@ def standardize_dataframe(
             )
             for k in chunk:
                 # "" confidence -> always flagged, regardless of ERROR_FILL's text.
-                mapping[k] = (ERROR_FILL, "")
+                mapping[k] = (ERROR_FILL, "", [], "")
             continue
 
         warnings.extend(f"batch {n_batches}: {w}" for w in batch.warnings)
@@ -272,28 +302,47 @@ def standardize_dataframe(
         # r.raw_value text — the model sees the country-prefixed string, but
         # the mapping key must be the original (country, raw) tuple.
         for k, r in zip(chunk, batch.results):
-            mapping[k] = (r.standardized_value, r.confidence)
+            mapping[k] = (r.standardized_value, r.confidence, r.alternatives, r.reasoning)
 
-    # Build both new columns, aligned row-for-row with the original. Blanks
-    # are auto-filled with no real classification attempt, so they're always
-    # flagged too (8.2) — not a real answer, just a placeholder.
+    # Build three new columns, aligned row-for-row with the original.
+    # Blanks are auto-filled with no real classification attempt — flagged too.
+    # LOW:    Needs Review shows "Needs Review: Alt1? / Alt2?"; Review Reason has reasoning.
+    # MEDIUM: Needs Review is blank; Review Reason has reasoning (decision support, not action required).
+    # HIGH:   both new columns blank — no noise for the reviewer.
     standardized: list[str] = []
     needs_review: list[str] = []
+    review_reason: list[str] = []
     for k in keys:
         if k[1] == "":
             standardized.append(blank_fill)
             needs_review.append(NEEDS_REVIEW_COLUMN)
+            review_reason.append("")
             continue
-        value, confidence = mapping.get(k, ("", ""))
+        value, confidence, alternatives, reasoning = mapping.get(k, ("", "", [], ""))
         standardized.append(value)
-        needs_review.append(NEEDS_REVIEW_COLUMN if _needs_review(confidence) else "")
+        if confidence in ("", "LOW"):
+            alts_str = " / ".join(f"{a}?" for a in alternatives) if alternatives else ""
+            needs_review.append(
+                f"{NEEDS_REVIEW_COLUMN}: {alts_str}" if alts_str else NEEDS_REVIEW_COLUMN
+            )
+            review_reason.append(reasoning)
+        elif confidence == "MEDIUM":
+            needs_review.append("")
+            review_reason.append(reasoning)
+        else:  # HIGH
+            needs_review.append("")
+            review_reason.append("")
 
     # 3.2 passthrough + 3.3 insert next to the raw column.
     result = df.copy()
-    result = result.drop(columns=[c for c in (STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN) if c in result.columns])
+    result = result.drop(columns=[
+        c for c in (STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN)
+        if c in result.columns
+    ])
     insert_at = result.columns.get_loc(column) + 1
     result.insert(insert_at, STANDARDIZED_COLUMN, standardized)
     result.insert(insert_at + 1, NEEDS_REVIEW_COLUMN, needs_review)
+    result.insert(insert_at + 2, REVIEW_REASON_COLUMN, review_reason)
 
     non_blank_rows = len(keys) - blanks
     stats = Stats(
@@ -304,8 +353,9 @@ def standardize_dataframe(
         duplicates_collapsed=non_blank_rows - len(unique_nonblank),
         batches=n_batches,
         batch_size=batch_size,
-        api_calls_saved=(non_blank_rows - len(unique_nonblank)) + blanks,
-        flagged_count=needs_review.count(NEEDS_REVIEW_COLUMN),
+        api_calls_saved=(non_blank_rows - len(unique_nonblank)) + blanks + lookup_hits,
+        lookup_hits=lookup_hits,
+        flagged_count=sum(1 for v in needs_review if v.startswith(NEEDS_REVIEW_COLUMN)),
         retries_used=retries_used,
         failed_batches=failed_batches,
         warnings=warnings,
@@ -328,6 +378,7 @@ def standardize_file(
     result, stats = standardize_dataframe(
         df, raw_col, system_prompt, client, batch_size,
         country_dependent=country_dependent, country_column=country_col,
+        field_key=None,
     )
     out_path = output_dir / f"{path.stem}_standardized.xlsx"
     result.to_excel(out_path, index=False)
@@ -443,10 +494,11 @@ def main() -> int:
         retry_base_delay=args.retry_base_delay,
         country_dependent=spec.country_dependent,
         country_column=country_col,
+        field_key=spec.key,
     )
 
     # Show a preview with the raw column and the new columns side by side.
-    preview_cols = [raw_col, STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN]
+    preview_cols = [raw_col, STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
     if "country" in result.columns:
         preview_cols = ["country"] + preview_cols
     print("\nPreview (first 12 rows):")
@@ -464,12 +516,14 @@ def main() -> int:
     print("\n" + "-" * 68)
     print(f"  total rows            : {stats.total_rows}")
     print(f"  blank/empty raw       : {stats.blanks}  (filled as {blank_fill!r}, no API call)")
-    print(f"  unique values sent    : {stats.unique_values}")
+    print(f"  unique values         : {stats.unique_values}")
+    print(f"  lookup hits           : {stats.lookup_hits}  (resolved from master table, no API call)")
+    print(f"  sent to classifier    : {stats.unique_values - stats.lookup_hits}")
     print(f"  duplicates reused     : {stats.duplicates_collapsed}")
     print(f"  API batches           : {stats.batches}  (size {stats.batch_size})")
-    print(f"  rows needing no call  : {stats.api_calls_saved}  (dupes + blanks)")
+    print(f"  rows needing no call  : {stats.api_calls_saved}  (dupes + blanks + lookup hits)")
     print(f"  flagged for review    : {stats.flagged_count}  "
-          f"(LOW/missing confidence, blanks, or API failures)")
+          f"(LOW/missing confidence, blanks, or API failures — see {NEEDS_REVIEW_COLUMN!r} + {REVIEW_REASON_COLUMN!r} columns)")
     print(f"  all columns preserved : {'YES' if passthrough_ok else 'NO'}")
     print(f"  new column placed     : {'next to raw column' if inserted_right else 'MISPLACED'}")
 
