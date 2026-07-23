@@ -230,32 +230,21 @@ div[data-testid="stAlert"] {
 
 st.title("Standardization Tool")
 st.caption(
-    "Upload a raw-value file, pick which field/taxonomy applies, and get back "
-    "the same file with a Standardized Value column added."
+    "Upload a file — field type is detected automatically from the file structure. "
+    "For plain value lists with no field column, use the override below."
 )
 
 FIELD_OPTIONS = fields.list_fields()
 FIELD_LABELS = {f.key: f"{f.display_name}" for f in FIELD_OPTIONS}
 
+# field_key is only used for single-field standard format files.
+# Initialise with a default so it's always defined.
+field_key = FIELD_OPTIONS[0].key
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.header("1. Choose a field")
-    field_key = st.selectbox(
-        "Taxonomy field",
-        options=[f.key for f in FIELD_OPTIONS],
-        format_func=lambda k: FIELD_LABELS[k],
-    )
-    spec = fields.get(field_key)
-    st.caption(f"Prompt file: `{spec.prompt_file}`")
-    if spec.notes:
-        st.info(spec.notes)
-    st.caption(
-        "Not used for analytics exports — field type is detected automatically "
-        "from the `fieldType` column."
-    )
-
-    st.header("2. API mode")
+    st.header("1. API mode")
     use_live = st.checkbox(
         "Use real Claude API (--live)",
         value=False,
@@ -268,10 +257,26 @@ with st.sidebar:
             "using the simulation, or add a key first."
         )
 
-    st.header("3. Batching")
+    st.header("2. Batching")
     batch_size = st.number_input(
         "Batch size (unique values per API call)", min_value=1, value=100, step=10
     )
+
+    st.header("3. Field override")
+    st.caption(
+        "Only needed for plain value files with no `Field` or `fieldType` column. "
+        "For all other files the taxonomy is detected automatically."
+    )
+    with st.expander("Override field (advanced)"):
+        field_key = st.selectbox(
+            "Taxonomy field",
+            options=[f.key for f in FIELD_OPTIONS],
+            format_func=lambda k: FIELD_LABELS[k],
+        )
+        spec = fields.get(field_key)
+        st.caption(f"Prompt file: `{spec.prompt_file}`")
+        if spec.notes:
+            st.info(spec.notes)
 
 # ── File upload ───────────────────────────────────────────────────────────────
 
