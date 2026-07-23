@@ -37,6 +37,22 @@ from standardize_file import (
 # Required columns (checked case-insensitively).
 _REQUIRED_COLS = {"countryid", "fieldtype", "inputtext"}
 
+# Standard format "Field" column value (lowercased) → field registry key.
+# Used when a regular file has a "Field" column with mixed field types.
+STANDARD_FIELD_MAP: dict[str, str] = {
+    "designation": "positions_designations",
+    "position": "positions_designations",
+    "business legal form": "business_legal_form",
+    "business status": "business_status",
+    "brn type": "brn_type",
+    "psc beneficiary type": "psc_beneficiary_type",
+    "directors officers type": "directors_officers_type",
+    "business entity type": "business_entity_type",
+    "ownership relationship type": "ownership_relationship_type",
+    "directors officers status": "directors_officers_status",
+    "ownership relationship status": "ownership_relationship_status",
+}
+
 # fieldType string (lowercased) → field registry key.
 # Extend this dict when new fieldTypes are added to the platform.
 FIELD_TYPE_MAP: dict[str, str] = {
@@ -209,3 +225,112 @@ def process_analytics_df(
         unknown_field_types=unknown_types,
     )
     return result, analytics_stats
+
+
+# ---------------------------------------------------------------------------
+# Standard format with mixed Field column
+# ---------------------------------------------------------------------------
+
+def resolve_standard_field(field_val: str) -> str | None:
+    """Map a standard-format Field column value to a field registry key, or None."""
+    return STANDARD_FIELD_MAP.get(str(field_val).strip().lower())
+
+
+def is_multi_field_standard(df: pd.DataFrame) -> bool:
+    """Return True if df has a 'Field' column containing at least one known field type.
+
+    This catches standard-format files (Country / Value / Field / ...) where
+    the Field column mixes types like 'Designation', 'Position',
+    'Business Legal Form', etc. — each group needs a different classifier.
+    """
+    field_col = next(
+        (c for c in df.columns if str(c).strip().lower() == "field"), None
+    )
+    if field_col is None:
+        return False
+    return any(
+        resolve_standard_field(str(v)) is not None
+        for v in df[field_col].dropna().unique()
+    )
+
+
+def process_standard_multi_field_df(
+    df: pd.DataFrame,
+    value_col: str,
+    country_col: str | None,
+    use_live: bool,
+    batch_size: int,
+) -> tuple[pd.DataFrame, AnalyticsStats]:
+    """Classify a standard-format DataFrame that has a mixed 'Field' column.
+
+    Splits by the Field column value, classifies each group with the matching
+    field spec, and recombines in original row order — identical logic to
+    process_analytics_df but without the countryId resolution step.
+    """
+    field_col = next(c for c in df.columns if str(c).strip().lower() == "field")
+
+    result = df.copy()
+    result[STANDARDIZED_COLUMN] = ""
+    result[NEEDS_REVIEW_COLUMN] = ""
+    result[REVIEW_REASON_COLUMN] = ""
+
+    unknown_types: list[str] = []
+    field_summaries: list[dict] = []
+    real_client = RealClaudeClient() if use_live else None
+
+    for ft, group_idx in result.groupby(field_col, dropna=False).groups.items():
+        field_key = resolve_standard_field(str(ft))
+
+        if field_key is None:
+            unknown_types.append(str(ft))
+            result.loc[group_idx, STANDARDIZED_COLUMN] = "Unknown field type"
+            result.loc[group_idx, NEEDS_REVIEW_COLUMN] = (
+                f"{NEEDS_REVIEW_COLUMN}: no classifier for field type {ft!r}"
+            )
+            field_summaries.append({
+                "field_type": ft,
+                "field_key": None,
+                "row_count": len(group_idx),
+                "known": False,
+                "stats": None,
+            })
+            continue
+
+        spec = fields.get(field_key)
+        system_prompt = spec.load_prompt()
+        blank_fill = spec.standard_values[-1]
+        client = real_client if use_live else MockClaudeClient(field_key=field_key)
+
+        group_df = result.loc[group_idx].copy()
+        effective_country_col = country_col if spec.country_dependent else None
+
+        sub_result, stats = standardize_dataframe(
+            group_df,
+            column=value_col,
+            system_prompt=system_prompt,
+            client=client,
+            batch_size=batch_size,
+            blank_fill=blank_fill,
+            country_dependent=spec.country_dependent,
+            country_column=effective_country_col,
+            field_key=field_key,
+        )
+
+        result.loc[group_idx, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN].values
+        result.loc[group_idx, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN].values
+        result.loc[group_idx, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN].values
+
+        field_summaries.append({
+            "field_type": ft,
+            "field_key": field_key,
+            "display_name": spec.display_name,
+            "row_count": len(group_idx),
+            "known": True,
+            "stats": stats,
+        })
+
+    return result, AnalyticsStats(
+        total_rows=len(df),
+        field_summaries=field_summaries,
+        unknown_field_types=unknown_types,
+    )

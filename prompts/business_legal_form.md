@@ -14,7 +14,7 @@ Case Normalization: Return all outputs in Title Case as written above (e.g., For
 Jurisdictional Equivalence: Translate regional acronyms and local terms using the functional equivalences below:  
 Sole Proprietorship / Individual Business — Sole Trader, Individual, Proprietorship, Trader, Craftsman, Enkeltpersonforetak (ENK), Entrepreneur individuel, Auto-entrepreneur, Gewerbetreibender  
 Partnership — General Partnership, Limited Partnership, Limited Liability Partnership, LLP, LP, L.P., VOF, SNC, Joint Venture Company, Joint Venture Partnership, Co-Venture, OHG, KG, Vof, Snc, Société en nom collectif  
-Company — LLC, GmbH, Ltd, Limited, PLC, S.A., AG, BV, NV, Pty Ltd, SARL, SAS, SpA, Sociedad Limitada, Corp, Inc, Incorporated, S.A.P.I., S.A.S., Holding, Holdco, Parent Company, Group Holding, Private Limited, Private Unlimited, Unlimited Company, ULC, Joint Stock Company, Independent Company  
+Company — LLC, GmbH, Ltd, Limited, PLC, S.A., AG, BV, NV, Pty Ltd, Pty, Proprietary Company, Proprietary Limited, SARL, SAS, SpA, Sociedad Limitada, Corp, Inc, Incorporated, S.A.P.I., S.A.S., Holding, Holdco, Parent Company, Group Holding, Private Limited, Private Unlimited, Unlimited Company, ULC, Joint Stock Company, Independent Company  
 Non-Profit / Cooperative — Nonprofit, NPO, Association, Union, Foundation, Cooperative, Co-op, ASBL, Association loi 1901, Coöperatie, Credit Union, Stichting, Verein  
 Trust / Fund / Scheme — Trust, Unit Trust, Discretionary Trust, Managed Investment Scheme, Fund, Scheme  
 Foreign Entity / Branch — Branch, Establishment, Overseas company, Foreign company (RCS), NUF, Extraprovincial company, Non-resident company, External entity, Alien corporation, Subsidiary, Division, Sub  

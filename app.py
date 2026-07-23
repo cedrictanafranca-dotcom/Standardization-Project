@@ -32,7 +32,9 @@ import fields
 from analytics_format import (
     RESOLVED_COUNTRY_COLUMN,
     is_analytics_format,
+    is_multi_field_standard,
     process_analytics_df,
+    process_standard_multi_field_df,
     summarize_field_types,
 )
 from classifier import MockClaudeClient, RealClaudeClient
@@ -279,6 +281,7 @@ uploaded = st.file_uploader("Raw-value file (.xlsx, .xls, .csv)", type=["xlsx", 
 column_override = None
 df_preview = None
 is_analytics = False
+is_multi_standard = False
 
 if uploaded is not None:
     suffix = Path(uploaded.name).suffix.lower()
@@ -288,12 +291,12 @@ if uploaded is not None:
         df_preview = pd.read_csv(uploaded)
 
     is_analytics = is_analytics_format(df_preview)
+    is_multi_standard = not is_analytics and is_multi_field_standard(df_preview)
 
     st.write(f"Loaded **{len(df_preview)}** rows, columns: {list(df_preview.columns)}")
     st.dataframe(df_preview.head(10), use_container_width=True)
 
     if is_analytics:
-        # Show format banner and field-type breakdown.
         st.info(
             "**Analytics export detected** — this file has `countryId`, `fieldType`, "
             "and `inputText` columns. Country IDs will be resolved automatically and "
@@ -311,8 +314,25 @@ if uploaded is not None:
                 "Rows": item["row_count"],
             })
         st.table(pd.DataFrame(rows))
+
+    elif is_multi_standard:
+        # Standard file with a mixed Field column — auto-route each group.
+        field_col = next(c for c in df_preview.columns if str(c).strip().lower() == "field")
+        from analytics_format import resolve_standard_field
+        rows = []
+        for ft, group in df_preview.groupby(field_col, dropna=False):
+            fk = resolve_standard_field(str(ft))
+            display = fields.get(fk).display_name if fk else None
+            status = f"→ {display}" if display else "⚠ No classifier — will be skipped"
+            rows.append({"Field (in file)": ft, "Classifier": status, "Rows": len(group)})
+        st.info(
+            "**Mixed-field file detected** — the `Field` column contains multiple "
+            "field types. Each will be classified with its matching taxonomy automatically."
+        )
+        st.table(pd.DataFrame(rows))
+
     else:
-        # Standard format: let user pick the raw-value column.
+        # Single-field standard format: let user pick the raw-value column.
         try:
             auto_col = detect_value_column(df_preview)
             col_help = f"Auto-detected: {auto_col!r}"
@@ -436,9 +456,99 @@ if run_clicked and uploaded is not None and is_analytics:
         input_col=input_col_actual,
     )
 
-# ── Standard format processing ────────────────────────────────────────────────
+# ── Multi-field standard format processing ───────────────────────────────────
 
-elif run_clicked and uploaded is not None and not is_analytics:
+elif run_clicked and uploaded is not None and is_multi_standard:
+    if not use_live:
+        st.info(
+            "Running in **SIMULATED** mode — no API key used, no cost. "
+            "Check 'Use real Claude API' in the sidebar for real classifications."
+        )
+
+    progress = st.progress(0, text="Classifying each field type…")
+    field_col = next(c for c in df_preview.columns if str(c).strip().lower() == "field")
+    try:
+        value_col = detect_value_column(df_preview)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    country_col = detect_country_column(df_preview)
+
+    result_df, analytics_stats = process_standard_multi_field_df(
+        df_preview,
+        value_col=value_col,
+        country_col=country_col,
+        use_live=use_live,
+        batch_size=int(batch_size),
+    )
+    progress.progress(100, text="Done.")
+
+    total_flagged = 0
+    total_failed = 0
+    for fs in analytics_stats.field_summaries:
+        if not fs["known"] or fs["stats"] is None:
+            continue
+        s = fs["stats"]
+        classified = s.total_rows - s.blanks
+        st.success(
+            f"**{fs['field_type']}** ({fs['display_name']}) — "
+            f"{s.total_rows} rows, {classified} classified, "
+            f"{s.blanks} blank, {s.unique_values} unique values "
+            f"({s.api_calls_saved} rows needed no API call)."
+        )
+        total_flagged += s.flagged_count
+        total_failed += len(s.failed_batches)
+
+    if analytics_stats.unknown_field_types:
+        st.warning(
+            f"Skipped {len(analytics_stats.unknown_field_types)} unknown field type(s): "
+            + ", ".join(f"**{t}**" for t in analytics_stats.unknown_field_types)
+            + " — rows are marked in the Needs Review column."
+        )
+    if total_flagged:
+        st.warning(
+            f"{total_flagged} row(s) flagged — check the {NEEDS_REVIEW_COLUMN!r} "
+            f"and {REVIEW_REASON_COLUMN!r} columns."
+        )
+    if total_failed:
+        st.error(f"{total_failed} batch(es) failed — rows marked in {STANDARDIZED_COLUMN!r}.")
+
+    st.subheader("Result")
+    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    original_cols = [c for c in result_df.columns if c not in our_cols]
+    default_keep = [c for c in [country_col, field_col, value_col] if c and c in original_cols]
+    selected_original = st.multiselect(
+        "Columns to include in export",
+        options=original_cols,
+        default=default_keep,
+        help="Standardized Value, Needs Review, and Review Reason are always included.",
+    )
+    export_df = result_df[selected_original + our_cols]
+    st.dataframe(export_df, use_container_width=True)
+
+    out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
+    out_path = config.OUTPUT_DIR / out_name
+    export_df.to_excel(out_path, index=False)
+    with open(out_path, "rb") as fh:
+        st.download_button(
+            "Download standardized file",
+            data=fh.read(),
+            file_name=out_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    _render_submit_corrections(
+        result_df=result_df,
+        field_key=None,
+        field_display=None,
+        raw_col=value_col,
+        country_col=country_col,
+        is_analytics=False,
+    )
+
+# ── Single-field standard format processing ───────────────────────────────────
+
+elif run_clicked and uploaded is not None and not is_analytics and not is_multi_standard:
     spec = fields.get(field_key)
     system_prompt = spec.load_prompt()
     blank_fill = spec.standard_values[-1]
