@@ -40,6 +40,7 @@ _REQUIRED_COLS = {"countryid", "fieldtype", "inputtext"}
 # Standard format "Field" column value (lowercased) → field registry key.
 # Used when a regular file has a "Field" column with mixed field types.
 STANDARD_FIELD_MAP: dict[str, str] = {
+    # Human-readable column values
     "designation": "positions_designations",
     "position": "positions_designations",
     "business legal form": "business_legal_form",
@@ -51,6 +52,17 @@ STANDARD_FIELD_MAP: dict[str, str] = {
     "ownership relationship type": "ownership_relationship_type",
     "directors officers status": "directors_officers_status",
     "ownership relationship status": "ownership_relationship_status",
+    # Field key strings used directly in some files
+    "positions_designations": "positions_designations",
+    "business_legal_form": "business_legal_form",
+    "business_status": "business_status",
+    "brn_type": "brn_type",
+    "psc_beneficiary_type": "psc_beneficiary_type",
+    "directors_officers_type": "directors_officers_type",
+    "business_entity_type": "business_entity_type",
+    "ownership_relationship_type": "ownership_relationship_type",
+    "directors_officers_status": "directors_officers_status",
+    "ownership_relationship_status": "ownership_relationship_status",
 }
 
 # fieldType string (lowercased) → field registry key.
