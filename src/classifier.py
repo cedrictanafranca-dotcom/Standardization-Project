@@ -406,6 +406,7 @@ class MockClaudeClient:
     # Government > catch-all).
     _BLF_COMPANY = [
         "llc", "gmbh", "ltd", "limited", "plc", "ag", "bv", "nv", "pty ltd",
+        "pty", "proprietary company", "proprietary limited",
         "sarl", "sas", "spa", "sociedad limitada", "corp", "corporation",
         "inc", "incorporated", "holding", "unlimited company", "ulc",
         "joint stock company", "private limited",

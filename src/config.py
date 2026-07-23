@@ -24,7 +24,7 @@ PROMPTS_DIR = PROJECT_ROOT / "prompts"
 DATA_DIR = PROJECT_ROOT / "data"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Value shipped in .env / .env.example as a stand-in until a real key exists.
 _PLACEHOLDER_PREFIXES = ("sk-ant-REPLACE_ME", "sk-ant-xxxx")

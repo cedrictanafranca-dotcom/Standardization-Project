@@ -6,6 +6,12 @@ No new classification logic lives here — this file only handles the UI and
 calls into the same functions the CLI (src/standardize_file.py) already uses
 and the tests already cover.
 
+Supports two input formats automatically:
+  Standard format   — any file with a raw-value column + optional country column.
+  Analytics format  — Global Gateway analytics export with countryId / fieldType /
+                      inputText columns; field selection is automatic and multiple
+                      field types are processed in one run.
+
 Run:
     .venv\Scripts\streamlit.exe run app.py
 """
@@ -21,7 +27,14 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 import config
+import corrections as cq
 import fields
+from analytics_format import (
+    RESOLVED_COUNTRY_COLUMN,
+    is_analytics_format,
+    process_analytics_df,
+    summarize_field_types,
+)
 from classifier import MockClaudeClient, RealClaudeClient
 from jira_ticket import build_ticket_text, find_countries
 from standardize_file import (
@@ -30,11 +43,164 @@ from standardize_file import (
     STANDARDIZED_COLUMN,
     detect_country_column,
     detect_value_column,
-    read_table,
     standardize_dataframe,
 )
 
 st.set_page_config(page_title="Standardization Tool", layout="wide")
+
+
+def _norm_val(v) -> str:
+    if v is None:
+        return ""
+    import math
+    if isinstance(v, float) and math.isnan(v):
+        return ""
+    return " ".join(str(v).split())
+
+
+def _render_submit_corrections(
+    result_df,
+    field_key,
+    field_display,
+    raw_col,
+    country_col,
+    is_analytics,
+    ft_col=None,
+    input_col=None,
+):
+    """Render the 'Submit corrections for review' expander below the download button."""
+    with st.expander("Submit corrections for review"):
+        st.caption(
+            "Download the result, edit the **Standardized Value** column for any rows "
+            "you disagree with, then re-upload here. Detected changes will be queued "
+            "for a product person to approve or reject on the **Review Corrections** page."
+        )
+
+        reviewer_name = st.text_input(
+            "Your name", placeholder="e.g. Sarah (Compliance)", key="reviewer_name"
+        )
+        corrected_file = st.file_uploader(
+            "Re-upload corrected file (.xlsx, .csv)",
+            type=["xlsx", "xls", "csv"],
+            key="corrections_upload",
+        )
+
+        if corrected_file is None:
+            return
+
+        suffix = Path(corrected_file.name).suffix.lower()
+        if suffix in (".xlsx", ".xls"):
+            corrected_df = pd.read_excel(corrected_file)
+        else:
+            corrected_df = pd.read_csv(corrected_file)
+
+        if STANDARDIZED_COLUMN not in corrected_df.columns:
+            st.error(f"Uploaded file must contain a '{STANDARDIZED_COLUMN}' column.")
+            return
+
+        # Build corrections list by diffing corrected against original result.
+        corrections_list = []
+
+        if is_analytics and input_col and ft_col:
+            from analytics_format import resolve_field_type
+            # Map (inputText, fieldType) → original classification info
+            orig_map: dict[tuple, dict] = {}
+            for _, row in result_df.iterrows():
+                key = (_norm_val(row.get(input_col)), _norm_val(row.get(ft_col)))
+                if key not in orig_map:
+                    fk = resolve_field_type(str(row.get(ft_col, "")))
+                    fd = fields.get(fk).display_name if fk else str(row.get(ft_col, ""))
+                    orig_map[key] = {
+                        "original": _norm_val(row.get(STANDARDIZED_COLUMN)),
+                        "field_key": fk or "",
+                        "field_display": fd,
+                        "country": _norm_val(row.get(RESOLVED_COUNTRY_COLUMN)),
+                    }
+            for _, row in corrected_df.iterrows():
+                key = (_norm_val(row.get(input_col)), _norm_val(row.get(ft_col)))
+                if key not in orig_map:
+                    continue
+                proposed = _norm_val(row.get(STANDARDIZED_COLUMN))
+                original = orig_map[key]["original"]
+                raw = _norm_val(row.get(input_col))
+                if proposed and proposed != original and raw:
+                    corrections_list.append({**orig_map[key], "raw_value": raw, "proposed": proposed})
+        else:
+            # Standard format: match on (country, raw_value)
+            orig_map = {}
+            for _, row in result_df.iterrows():
+                c = _norm_val(row.get(country_col)) if country_col else ""
+                r = _norm_val(row.get(raw_col))
+                key = (c, r)
+                if key not in orig_map:
+                    orig_map[key] = _norm_val(row.get(STANDARDIZED_COLUMN))
+            for _, row in corrected_df.iterrows():
+                if raw_col not in corrected_df.columns:
+                    break
+                c = _norm_val(row.get(country_col)) if (country_col and country_col in corrected_df.columns) else ""
+                r = _norm_val(row.get(raw_col))
+                if not r:
+                    continue
+                key = (c, r)
+                if key not in orig_map:
+                    continue
+                proposed = _norm_val(row.get(STANDARDIZED_COLUMN))
+                original = orig_map[key]
+                if proposed and proposed != original:
+                    corrections_list.append({
+                        "raw_value": r,
+                        "field_key": field_key,
+                        "field_display": field_display,
+                        "country": c,
+                        "original": original,
+                        "proposed": proposed,
+                    })
+
+        # Deduplicate by (field_key, raw_value, country).
+        seen: set[tuple] = set()
+        unique: list[dict] = []
+        for c in corrections_list:
+            k = (c["field_key"], c["raw_value"], c["country"])
+            if k not in seen:
+                unique.append(c)
+                seen.add(k)
+
+        if not unique:
+            st.info("No differences detected — the Standardized Value column matches the original result.")
+            return
+
+        st.write(f"**{len(unique)} correction(s) detected:**")
+        st.table(pd.DataFrame([{
+            "Field": c["field_display"],
+            "Country": c["country"] or "—",
+            "Raw Value": c["raw_value"],
+            "Original": c["original"],
+            "Proposed": c["proposed"],
+        } for c in unique]))
+
+        if st.button("Submit for review", type="primary", key="submit_corrections_btn"):
+            if not reviewer_name.strip():
+                st.warning("Enter your name before submitting.")
+                return
+            to_queue = [
+                cq.make_correction(
+                    field_key=c["field_key"],
+                    field_display=c["field_display"],
+                    raw_value=c["raw_value"],
+                    original=c["original"],
+                    proposed=c["proposed"],
+                    country=c["country"],
+                    submitted_by=reviewer_name.strip(),
+                )
+                for c in unique
+            ]
+            added = cq.add_to_queue(to_queue)
+            st.success(
+                f"{added} correction(s) submitted. A product person will review them "
+                "on the **Review Corrections** page."
+            )
+if Path("assets/trulioo_logo.png").exists():
+    st.logo("assets/trulioo_logo.png")
 
 st.markdown("""
 <style>
@@ -69,6 +235,8 @@ st.caption(
 FIELD_OPTIONS = fields.list_fields()
 FIELD_LABELS = {f.key: f"{f.display_name}" for f in FIELD_OPTIONS}
 
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+
 with st.sidebar:
     st.header("1. Choose a field")
     field_key = st.selectbox(
@@ -80,6 +248,10 @@ with st.sidebar:
     st.caption(f"Prompt file: `{spec.prompt_file}`")
     if spec.notes:
         st.info(spec.notes)
+    st.caption(
+        "Not used for analytics exports — field type is detected automatically "
+        "from the `fieldType` column."
+    )
 
     st.header("2. API mode")
     use_live = st.checkbox(
@@ -99,11 +271,15 @@ with st.sidebar:
         "Batch size (unique values per API call)", min_value=1, value=100, step=10
     )
 
+# ── File upload ───────────────────────────────────────────────────────────────
+
 st.subheader("Upload a file")
 uploaded = st.file_uploader("Raw-value file (.xlsx, .xls, .csv)", type=["xlsx", "xls", "csv"])
 
 column_override = None
 df_preview = None
+is_analytics = False
+
 if uploaded is not None:
     suffix = Path(uploaded.name).suffix.lower()
     if suffix in (".xlsx", ".xls"):
@@ -111,25 +287,158 @@ if uploaded is not None:
     else:
         df_preview = pd.read_csv(uploaded)
 
+    is_analytics = is_analytics_format(df_preview)
+
     st.write(f"Loaded **{len(df_preview)}** rows, columns: {list(df_preview.columns)}")
-    st.dataframe(df_preview.head(10), width="stretch")
+    st.dataframe(df_preview.head(10), use_container_width=True)
 
-    try:
-        auto_col = detect_value_column(df_preview)
-        col_help = f"Auto-detected: {auto_col!r}"
-    except ValueError:
-        auto_col = None
-        col_help = "Could not auto-detect — please pick the raw-value column."
+    if is_analytics:
+        # Show format banner and field-type breakdown.
+        st.info(
+            "**Analytics export detected** — this file has `countryId`, `fieldType`, "
+            "and `inputText` columns. Country IDs will be resolved automatically and "
+            "each field type will be classified with its matching taxonomy. No manual "
+            "field selection needed."
+        )
+        ft_summary = summarize_field_types(df_preview)
+        rows = []
+        for item in ft_summary:
+            display = item["display_name"] if item.get("display_name") else item["field_type"]
+            status = f"→ {display}" if item["known"] else "⚠ No classifier — will be skipped"
+            rows.append({
+                "Field Type (in file)": item["field_type"],
+                "Classifier": status,
+                "Rows": item["row_count"],
+            })
+        st.table(pd.DataFrame(rows))
+    else:
+        # Standard format: let user pick the raw-value column.
+        try:
+            auto_col = detect_value_column(df_preview)
+            col_help = f"Auto-detected: {auto_col!r}"
+        except ValueError:
+            auto_col = None
+            col_help = "Could not auto-detect — please pick the raw-value column."
 
-    columns = list(df_preview.columns)
-    default_index = columns.index(auto_col) if auto_col in columns else 0
-    column_override = st.selectbox(
-        "Raw-value column", options=columns, index=default_index, help=col_help
-    )
+        columns = list(df_preview.columns)
+        default_index = columns.index(auto_col) if auto_col in columns else 0
+        column_override = st.selectbox(
+            "Raw-value column", options=columns, index=default_index, help=col_help
+        )
+
+# ── Run button ────────────────────────────────────────────────────────────────
 
 run_clicked = st.button("Run", type="primary", disabled=uploaded is None)
 
-if run_clicked and uploaded is not None:
+# ── Analytics format processing ───────────────────────────────────────────────
+
+if run_clicked and uploaded is not None and is_analytics:
+    if not use_live:
+        st.info(
+            "Running in **SIMULATED** mode — no API key used, no cost. "
+            "Check 'Use real Claude API' in the sidebar for real classifications."
+        )
+
+    progress = st.progress(0, text="Resolving country IDs and classifying…")
+
+    result_df, analytics_stats = process_analytics_df(
+        df_preview,
+        use_live=use_live,
+        batch_size=int(batch_size),
+    )
+    progress.progress(100, text="Done.")
+
+    # ── Per-field stats ───────────────────────────────────────────────────────
+    total_flagged = 0
+    total_failed = 0
+    for fs in analytics_stats.field_summaries:
+        if not fs["known"] or fs["stats"] is None:
+            continue
+        s = fs["stats"]
+        classified = s.total_rows - s.blanks
+        st.success(
+            f"**{fs['field_type']}** ({fs['display_name']}) — "
+            f"{s.total_rows} rows, {classified} classified, "
+            f"{s.blanks} blank, {s.unique_values} unique values "
+            f"({s.api_calls_saved} rows needed no API call)."
+        )
+        total_flagged += s.flagged_count
+        total_failed += len(s.failed_batches)
+
+    if analytics_stats.unknown_field_types:
+        st.warning(
+            f"Skipped {len(analytics_stats.unknown_field_types)} unknown field type(s): "
+            + ", ".join(f"**{t}**" for t in analytics_stats.unknown_field_types)
+            + " — rows are marked in the Needs Review column."
+        )
+    if total_flagged:
+        st.warning(
+            f"{total_flagged} total row(s) flagged across all field types — "
+            f"check the {NEEDS_REVIEW_COLUMN!r} and {REVIEW_REASON_COLUMN!r} columns."
+        )
+    if total_failed:
+        st.error(
+            f"{total_failed} batch(es) failed after retries — those rows are marked "
+            f"in both the {STANDARDIZED_COLUMN!r} and {NEEDS_REVIEW_COLUMN!r} columns."
+        )
+
+    # ── Export column selection ───────────────────────────────────────────────
+    st.subheader("Result")
+
+    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    original_cols = [c for c in result_df.columns if c not in our_cols]
+
+    # Smart defaults for analytics format: Country, fieldType col, inputText col.
+    ft_col_actual = next(
+        (c for c in original_cols if str(c).lower().strip() == "fieldtype"), None
+    )
+    input_col_actual = next(
+        (c for c in original_cols if str(c).lower().strip() == "inputtext"), None
+    )
+    default_keep = []
+    if RESOLVED_COUNTRY_COLUMN in original_cols:
+        default_keep.append(RESOLVED_COUNTRY_COLUMN)
+    if ft_col_actual:
+        default_keep.append(ft_col_actual)
+    if input_col_actual:
+        default_keep.append(input_col_actual)
+
+    selected_original = st.multiselect(
+        "Columns to include in export",
+        options=original_cols,
+        default=[c for c in default_keep if c in original_cols],
+        help="Standardized Value, Needs Review, and Review Reason are always included.",
+    )
+    export_df = result_df[selected_original + our_cols]
+
+    st.dataframe(export_df, use_container_width=True)
+
+    out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
+    out_path = config.OUTPUT_DIR / out_name
+    export_df.to_excel(out_path, index=False)
+
+    with open(out_path, "rb") as fh:
+        st.download_button(
+            "Download standardized file",
+            data=fh.read(),
+            file_name=out_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    _render_submit_corrections(
+        result_df=result_df,
+        field_key=None,
+        field_display=None,
+        raw_col=input_col_actual,
+        country_col=RESOLVED_COUNTRY_COLUMN if RESOLVED_COUNTRY_COLUMN in result_df.columns else None,
+        is_analytics=True,
+        ft_col=ft_col_actual,
+        input_col=input_col_actual,
+    )
+
+# ── Standard format processing ────────────────────────────────────────────────
+
+elif run_clicked and uploaded is not None and not is_analytics:
     spec = fields.get(field_key)
     system_prompt = spec.load_prompt()
     blank_fill = spec.standard_values[-1]
@@ -230,7 +539,7 @@ if run_clicked and uploaded is not None:
     )
     export_df = result_df[selected_original + our_cols]
 
-    st.dataframe(export_df, width="stretch")
+    st.dataframe(export_df, use_container_width=True)
 
     out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
     out_path = config.OUTPUT_DIR / out_name
@@ -243,6 +552,15 @@ if run_clicked and uploaded is not None:
             file_name=out_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+    _render_submit_corrections(
+        result_df=result_df,
+        field_key=field_key,
+        field_display=spec.display_name,
+        raw_col=raw_col,
+        country_col=country_col,
+        is_analytics=False,
+    )
 
     # Section 5 item 8 — ready-to-paste Jira ticket content (not a live Jira
     # API call — see Section 6). Copy this straight into a new ticket.
@@ -260,5 +578,6 @@ if run_clicked and uploaded is not None:
         file_name=f"{Path(uploaded.name).stem}_jira_ticket.txt",
         mime="text/plain",
     )
+
 elif uploaded is None:
     st.info("Upload a file to get started.")
