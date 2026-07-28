@@ -19,7 +19,6 @@ Output Format
 
 One output per input, no exceptions. Count inputs before processing; output list must match exactly.  
 Number each output to match its input (e.g., 1\. Active, 2\. Other / Unclassified).  
-No explanations — return the standardized value only.  
 Use Title Case with slash exactly as written (e.g., Pending / Insolvency, Other / Unclassified).  
 If uncertain, map to Other / Unclassified rather than omitting.  
 After your final item: \[Total: X of Y mapped\]

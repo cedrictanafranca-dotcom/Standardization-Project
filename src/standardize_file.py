@@ -51,6 +51,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +77,12 @@ from retry import RetryExhaustedError, call_with_retry
 # gracefully if data/master_lookup.json doesn't exist yet — the pipeline
 # continues without it and sends everything to the API.
 _MASTER_LOOKUP = load_lookup()
+
+
+def reload_lookup() -> None:
+    """Reload the in-process lookup cache from disk (call after updating master_lookup.json)."""
+    global _MASTER_LOOKUP
+    _MASTER_LOOKUP = load_lookup()
 
 STANDARDIZED_COLUMN = "Standardized Value"
 # Column header AND the flag value written into it when a row is flagged
@@ -118,6 +125,8 @@ class Stats:
     retries_used: int = 0
     failed_batches: list[run_log.BatchFailure] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    new_mappings: dict = field(default_factory=dict)
+    # (country, raw_value) -> std_value — HIGH confidence API results not in lookup
 
     @property
     def ok(self) -> bool:
@@ -129,6 +138,12 @@ def _norm_key(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
     return " ".join(str(value).split())
+
+
+# Matches system/data artifacts like MASKED_WHOIS_DATA, NULL_VALUE, NO_DATA —
+# all-caps snake_case with at least one underscore. These are never real business
+# values and should be caught before the model sees them.
+_SYSTEM_ARTIFACT_RE = re.compile(r'^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$')
 
 
 def detect_value_column(df: pd.DataFrame, user_specified: str | None = None) -> str:
@@ -204,6 +219,7 @@ def standardize_dataframe(
     country_dependent: bool = False,
     country_column: str | None = None,
     field_key: str | None = None,
+    canonical_values: list[str] | None = None,
 ) -> tuple[pd.DataFrame, Stats]:
     """Add a standardized-value column next to `column`, everything else intact.
 
@@ -254,6 +270,21 @@ def standardize_dataframe(
     else:
         to_classify = unique_nonblank
 
+    # Pre-classify obvious system artifacts without an API call.
+    # e.g. MASKED_WHOIS_DATA, NULL_VALUE — all-caps snake_case values are never
+    # real business data and always map to the catch-all.
+    filtered_to_classify: list[tuple[str, str]] = []
+    for k in to_classify:
+        _, raw = k
+        if _SYSTEM_ARTIFACT_RE.match(raw):
+            mapping[k] = (
+                blank_fill, "LOW", [],
+                f"{raw!r} appears to be a system data artifact — mapped to catch-all for review.",
+            )
+        else:
+            filtered_to_classify.append(k)
+    to_classify = filtered_to_classify
+
     # 4.1 chunking: never send the whole file as one call.
     warnings: list[str] = []
     failed_batches: list[run_log.BatchFailure] = []
@@ -302,7 +333,29 @@ def standardize_dataframe(
         # r.raw_value text — the model sees the country-prefixed string, but
         # the mapping key must be the original (country, raw) tuple.
         for k, r in zip(chunk, batch.results):
-            mapping[k] = (r.standardized_value, r.confidence, r.alternatives, r.reasoning)
+            std_val = r.standardized_value
+            confidence = r.confidence
+            alternatives = r.alternatives
+            reasoning = r.reasoning
+            # If the model returned a non-canonical value (e.g. echoed the
+            # country-prefixed input or invented a new label), replace it with
+            # the catch-all and flag for review so nothing non-standard leaks
+            # into the output.
+            if canonical_values and std_val and std_val not in canonical_values:
+                reasoning = f"Model returned non-canonical value {std_val!r} — mapped to catch-all for review."
+                std_val = blank_fill
+                confidence = "LOW"
+                alternatives = []
+            mapping[k] = (std_val, confidence, alternatives, reasoning)
+
+    # Collect HIGH confidence API results for lookup enrichment.
+    new_mappings: dict = {}
+    for k in to_classify:
+        entry = mapping.get(k)
+        if entry is not None:
+            std_val, confidence, _, _ = entry
+            if confidence == "HIGH" and std_val and std_val != ERROR_FILL:
+                new_mappings[k] = std_val
 
     # Build three new columns, aligned row-for-row with the original.
     # Blanks are auto-filled with no real classification attempt — flagged too.
@@ -318,7 +371,10 @@ def standardize_dataframe(
             needs_review.append(NEEDS_REVIEW_COLUMN)
             review_reason.append("")
             continue
-        value, confidence, alternatives, reasoning = mapping.get(k, ("", "", [], ""))
+        value, confidence, alternatives, reasoning = mapping.get(k, (blank_fill, "", [], ""))
+        # Guard against empty values from parse failures — never write NaN.
+        if not value:
+            value = blank_fill
         standardized.append(value)
         if confidence in ("", "LOW"):
             alts_str = " / ".join(f"{a}?" for a in alternatives) if alternatives else ""
@@ -359,6 +415,7 @@ def standardize_dataframe(
         retries_used=retries_used,
         failed_batches=failed_batches,
         warnings=warnings,
+        new_mappings=new_mappings,
     )
     return result, stats
 

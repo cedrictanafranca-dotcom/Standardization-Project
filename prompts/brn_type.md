@@ -81,6 +81,5 @@ Output Format
 One output per input, no exceptions. Count the number of input entries before processing. Your output list must contain exactly that many items — no more, no fewer. If you receive 40 inputs, you must return exactly 40 outputs.  
 Number each output to match its corresponding input (e.g., 1\. Business Registration Number, 2\. LEI, 3\. Tax ID Number).  
 Do not skip, merge, or combine any inputs.  
-Do not include explanations — return the standardized value only.  
 If you are uncertain about an entry, map it to Other / Unclassified rather than omitting it.  
 After your final output item, confirm the count in this exact format: \[Total: X of Y mapped\] where X \= number of outputs returned and Y \= number of inputs received.

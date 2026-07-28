@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 import config
 import corrections as cq
 import fields
+import master_lookup as _ml
 from analytics_format import (
     RESOLVED_COUNTRY_COLUMN,
     is_analytics_format,
@@ -45,6 +46,7 @@ from standardize_file import (
     STANDARDIZED_COLUMN,
     detect_country_column,
     detect_value_column,
+    reload_lookup,
     standardize_dataframe,
 )
 
@@ -58,6 +60,363 @@ def _norm_val(v) -> str:
     if isinstance(v, float) and math.isnan(v):
         return ""
     return " ".join(str(v).split())
+
+
+def _render_run_summary(
+    result_df: pd.DataFrame,
+    value_col: str,
+    field_summaries: list[dict] | None = None,
+    field_col: str | None = None,
+) -> None:
+    """Render a confidence breakdown summary after a run."""
+    nr = result_df[NEEDS_REVIEW_COLUMN].fillna("").astype(str)
+    rr = result_df[REVIEW_REASON_COLUMN].fillna("").astype(str)
+    raw = result_df[value_col].fillna("").astype(str).str.strip()
+
+    blank_mask = raw == ""
+    low_mask = nr.str.startswith(NEEDS_REVIEW_COLUMN) & ~blank_mask
+    med_mask = (~nr.str.startswith(NEEDS_REVIEW_COLUMN)) & (rr != "")
+    high_mask = (~nr.str.startswith(NEEDS_REVIEW_COLUMN)) & (rr == "") & ~blank_mask
+
+    total = len(result_df)
+    high_n = int(high_mask.sum())
+    med_n = int(med_mask.sum())
+    low_n = int(low_mask.sum())
+    blank_n = int(blank_mask.sum())
+
+    st.subheader("Run Summary")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("HIGH confidence", high_n, f"{high_n / total:.0%}" if total else "—")
+    c2.metric("MEDIUM confidence", med_n, f"{med_n / total:.0%}" if total else "—")
+    c3.metric("LOW — Needs Review", low_n, f"{low_n / total:.0%}" if total else "—")
+    c4.metric("Blank (auto-filled)", blank_n, f"{blank_n / total:.0%}" if total else "—")
+
+    if low_n:
+        st.warning(
+            f"**{low_n} row(s) flagged for review.** "
+            "Check the **Needs Review** column for ranked alternatives and "
+            "**Review Reason** for context. "
+            "Use **Submit corrections for review** below to flag any disagreements."
+        )
+    if med_n:
+        st.info(
+            f"**{med_n} row(s) classified with MEDIUM confidence** — accepted but involved judgment. "
+            "Review the **Review Reason** column before treating these as final."
+        )
+
+    # Per-field breakdown table for mixed-field runs.
+    if field_col and field_col in result_df.columns and field_summaries:
+        rows = []
+        for fs in field_summaries:
+            if not fs.get("known"):
+                continue
+            ft_mask = result_df[field_col].astype(str).str.strip() == str(fs["field_type"]).strip()
+            sub_nr = nr[ft_mask]
+            sub_rr = rr[ft_mask]
+            sub_raw = raw[ft_mask]
+            sub_blank = int((sub_raw == "").sum())
+            sub_low = int((sub_nr.str.startswith(NEEDS_REVIEW_COLUMN) & (sub_raw != "")).sum())
+            sub_med = int(((~sub_nr.str.startswith(NEEDS_REVIEW_COLUMN)) & (sub_rr != "")).sum())
+            sub_high = int(
+                ((~sub_nr.str.startswith(NEEDS_REVIEW_COLUMN)) & (sub_rr == "") & (sub_raw != "")).sum()
+            )
+            rows.append({
+                "Field": fs.get("display_name", fs["field_type"]),
+                "Total": len(sub_nr),
+                "HIGH": sub_high,
+                "MEDIUM": sub_med,
+                "LOW / Review": sub_low,
+                "Blank": sub_blank,
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_lookup_update(field_summaries: list[dict]) -> None:
+    """Show a button to add new HIGH confidence API results to the lookup table."""
+    new_by_field: dict[str, dict] = {}
+    for fs in field_summaries:
+        if fs.get("known") and fs.get("stats") and fs["stats"].new_mappings:
+            new_by_field[fs["field_key"]] = fs["stats"].new_mappings
+
+    total_new = sum(len(v) for v in new_by_field.values())
+    if total_new == 0:
+        return
+
+    breakdown = ", ".join(
+        f"{fields.get(fk).display_name} ({len(m)})"
+        for fk, m in new_by_field.items()
+    )
+    with st.expander(f"Add {total_new} new mapping(s) to lookup — avoid re-classifying in future runs"):
+        st.caption(
+            f"The API classified {total_new} value(s) with HIGH confidence that aren't in the lookup yet: "
+            f"{breakdown}. Adding them means future runs resolve these instantly without an API call."
+        )
+        if st.button("Add to lookup", key="update_lookup_btn", type="primary"):
+            added = 0
+            for fk, mappings in new_by_field.items():
+                spec_fk = fields.get(fk)
+                added += _ml.merge_api_results(fk, mappings, spec_fk.country_dependent)
+            reload_lookup()
+            st.success(f"Added {added} new entry(s) to the lookup. Active immediately for this session.")
+
+
+def _render_flagged_review(rr: dict) -> pd.DataFrame:
+    """Show inline review UI for flagged rows. Returns (possibly updated) result_df."""
+    result_df = rr["result_df"]
+    value_col = rr.get("value_col")
+    country_col = rr.get("country_col")
+    field_col = rr.get("field_col")
+    run_type = rr.get("run_type")
+
+    if not value_col or value_col not in result_df.columns:
+        return result_df
+
+    nr = result_df[NEEDS_REVIEW_COLUMN].fillna("").astype(str)
+    raw = result_df[value_col].fillna("").astype(str).str.strip()
+    flagged_idx = result_df.index[nr.str.startswith(NEEDS_REVIEW_COLUMN) & (raw != "")].tolist()
+
+    if not flagged_idx:
+        return result_df
+
+    # Build field-type → standard_values map for multi-field / analytics runs.
+    field_std_vals: dict[str, list] = {}
+    for fs in rr.get("field_summaries", []):
+        if fs.get("known") and fs.get("field_key"):
+            try:
+                sp = fields.get(fs["field_key"])
+                field_std_vals[str(fs.get("field_type", "")).strip()] = sp.standard_values
+            except Exception:
+                pass
+
+    st.subheader(f"Review {len(flagged_idx)} Flagged Row(s)")
+    st.caption(
+        "These rows were classified with LOW confidence or had issues. "
+        "Choose the correct value for each, then click **Confirm selections**."
+    )
+
+    with st.form("flagged_review_form"):
+        selections: dict[int, str] = {}
+
+        for i, idx in enumerate(flagged_idx):
+            row = result_df.loc[idx]
+            raw_val = _norm_val(row.get(value_col))
+            country = (
+                _norm_val(row.get(country_col))
+                if country_col and country_col in result_df.columns
+                else ""
+            )
+            current_std = _norm_val(row.get(STANDARDIZED_COLUMN))
+            nr_val = _norm_val(row.get(NEEDS_REVIEW_COLUMN))
+            reason = (
+                _norm_val(row.get(REVIEW_REASON_COLUMN))
+                if REVIEW_REASON_COLUMN in result_df.columns
+                else ""
+            )
+            ft_val = (
+                _norm_val(row.get(field_col))
+                if field_col and field_col in result_df.columns
+                else ""
+            )
+
+            # Parse alternatives from "Needs Review: alt1 | alt2" format.
+            alts: list[str] = []
+            prefix = NEEDS_REVIEW_COLUMN + ": "
+            if nr_val.startswith(prefix):
+                alts = [a.strip() for a in nr_val[len(prefix):].split(" | ") if a.strip()]
+
+            # Options = the field's full canonical standard values only.
+            options: list[str] = []
+            if run_type == "single_field" and rr.get("spec"):
+                options = list(rr["spec"].standard_values)
+            elif ft_val and ft_val in field_std_vals:
+                options = list(field_std_vals[ft_val])
+            if not options:
+                options = [v for v in ([current_std] + alts) if v] or ["Unknown"]
+
+            # Pre-select Suggestion 1 if it appears in the canonical list.
+            # Fall back to the catch-all (last item) when there are no suggestions
+            # rather than defaulting to index 0 (which is always Board Member).
+            default_idx = len(options) - 1
+            if alts and alts[0] in options:
+                default_idx = options.index(alts[0])
+            elif current_std in options:
+                default_idx = options.index(current_std)
+
+            # Header line: raw value · country · field type
+            header_parts = [f"**{raw_val}**"]
+            if country:
+                header_parts.append(f"· {country}")
+            if ft_val:
+                header_parts.append(f"· {ft_val}")
+            st.markdown(" ".join(header_parts))
+
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.markdown(f"**Current classification:** {current_std or '—'}")
+                if alts:
+                    suggestions = " / ".join(alts[:2])
+                    st.markdown(f"**Suggested:** {suggestions}")
+                else:
+                    st.markdown("**Suggested:** *(no alternatives — model was certain)*")
+                if reason:
+                    st.markdown(f"**Reason:** {reason}")
+            with col2:
+                selections[idx] = st.selectbox(
+                    "Set final classification",
+                    options=options,
+                    index=default_idx,
+                    key=f"review_sel_{idx}",
+                )
+
+            if i < len(flagged_idx) - 1:
+                st.divider()
+
+        submitted = st.form_submit_button("Confirm selections", type="primary")
+
+    if submitted:
+        updated = result_df.copy()
+
+        # Build field_type → field_key map for this run.
+        ft_to_fk: dict[str, str] = {}
+        for fs in rr.get("field_summaries", []):
+            if fs.get("known") and fs.get("field_key") and fs.get("field_type"):
+                ft_to_fk[str(fs["field_type"]).strip()] = fs["field_key"]
+
+        pending_saves = []
+        for idx, new_val in selections.items():
+            row = result_df.loc[idx]
+            raw = _norm_val(row.get(value_col))
+            country_val = (
+                _norm_val(row.get(country_col))
+                if country_col and country_col in result_df.columns
+                else ""
+            )
+            ft = (
+                str(row.get(field_col, "")).strip()
+                if field_col and field_col in result_df.columns
+                else ""
+            )
+            fk = ft_to_fk.get(ft) or rr.get("field_key")
+
+            updated.at[idx, STANDARDIZED_COLUMN] = new_val
+            updated.at[idx, NEEDS_REVIEW_COLUMN] = ""
+            updated.at[idx, REVIEW_REASON_COLUMN] = ""
+
+            if raw and fk and new_val:
+                try:
+                    sp = fields.get(fk)
+                    country_dep = sp.country_dependent
+                except Exception:
+                    country_dep = False
+                pending_saves.append({
+                    "field_key": fk,
+                    "display": sp.display_name if fk else fk,
+                    "raw": raw,
+                    "country": country_val if country_dep else "",
+                    "std_val": new_val,
+                    "country_dependent": country_dep,
+                })
+
+        rr["result_df"] = updated
+        rr["pending_lookup_saves"] = pending_saves
+        st.session_state["run_result"] = rr
+        st.success(f"{len(selections)} row(s) confirmed. Save them to the lookup below so they never flag again.")
+        return updated
+
+    return result_df
+
+
+def _render_pending_lookup_saves(rr: dict) -> None:
+    """After confirming flagged rows, offer to save those decisions to the lookup."""
+    pending = rr.get("pending_lookup_saves")
+    if not pending:
+        return
+
+    with st.expander(f"Save {len(pending)} confirmed mapping(s) to lookup — avoid re-flagging in future runs", expanded=True):
+        st.caption(
+            "These are the values you just confirmed. Saving them means future runs resolve "
+            "them instantly without an API call and without flagging them again."
+        )
+
+        save_flags: dict[int, bool] = {}
+        for i, item in enumerate(pending):
+            label = f"**{item['raw']}** → {item['std_val']}"
+            if item.get("country"):
+                label += f"  *(for {item['country']} only)*"
+            else:
+                label += "  *(all countries)*"
+            save_flags[i] = st.checkbox(label, value=True, key=f"pending_save_{i}")
+
+        if st.button("Save selected to lookup", key="pending_save_btn", type="primary"):
+            to_save = [item for i, item in enumerate(pending) if save_flags.get(i)]
+            total_added = 0
+            for item in to_save:
+                total_added += _ml.merge_api_results(
+                    item["field_key"],
+                    {(item["country"], item["raw"]): item["std_val"]},
+                    item["country_dependent"],
+                )
+            reload_lookup()
+            rr["pending_lookup_saves"] = None
+            st.session_state["run_result"] = rr
+            if total_added:
+                st.success(f"Saved {total_added} new entry(s) to the lookup. Active immediately.")
+            else:
+                st.info("All selected entries were already in the lookup — nothing new added.")
+
+
+def _render_manual_lookup_add(field_summaries: list[dict]) -> None:
+    """Show a form to manually add a single lookup entry."""
+    known = [fs for fs in field_summaries if fs.get("known") and fs.get("field_key")]
+    if not known:
+        return
+
+    with st.expander("Manually add a lookup entry"):
+        st.caption(
+            "Add a raw value → standardized value mapping directly to the lookup table. "
+            "Future runs will use this instead of calling the API."
+        )
+
+        field_options = {fs["field_key"]: fs.get("display_name", fs["field_key"]) for fs in known}
+        selected_fk = st.selectbox(
+            "Field",
+            options=list(field_options.keys()),
+            format_func=lambda k: field_options[k],
+            key="manual_lookup_field",
+        )
+        spec_ml = fields.get(selected_fk)
+
+        raw_input = st.text_input("Raw value (exact, case-sensitive)", key="manual_lookup_raw")
+        country_input = ""
+        if spec_ml.country_dependent:
+            country_input = st.text_input(
+                "Country (leave blank for country-agnostic)",
+                key="manual_lookup_country",
+            )
+        std_val = st.selectbox(
+            "Standardized value",
+            options=spec_ml.standard_values,
+            key="manual_lookup_std",
+        )
+
+        if st.button("Add to lookup", key="manual_lookup_btn", type="primary"):
+            if not raw_input.strip():
+                st.warning("Enter a raw value.")
+            else:
+                from standardize_file import _norm_key
+                norm_raw = _norm_key(raw_input.strip())
+                norm_country = _norm_key(country_input.strip()) if country_input else ""
+                added = _ml.merge_api_results(
+                    selected_fk,
+                    {(norm_country, norm_raw): std_val},
+                    spec_ml.country_dependent,
+                )
+                reload_lookup()
+                if added:
+                    st.success(f"Added: {raw_input.strip()!r} → {std_val!r}. Active immediately.")
+                else:
+                    st.info(f"{raw_input.strip()!r} is already in the lookup — no change.")
 
 
 def _render_submit_corrections(
@@ -262,7 +621,16 @@ with st.sidebar:
         "Batch size (unique values per API call)", min_value=1, value=100, step=10
     )
 
-    st.header("3. Field override")
+    st.header("3. Volume threshold")
+    min_count = st.number_input(
+        "Minimum value count",
+        min_value=1,
+        value=50,
+        step=10,
+        help="Raw values appearing fewer than this many times are excluded entirely from the output.",
+    )
+
+    st.header("4. Field override")
     st.caption(
         "Only needed for plain value files with no `Field` or `fieldType` column. "
         "For all other files the taxonomy is detected automatically."
@@ -297,6 +665,13 @@ if uploaded is not None:
 
     is_analytics = is_analytics_format(df_preview)
     is_multi_standard = not is_analytics and is_multi_field_standard(df_preview)
+
+    # Clear stale session state when a different file is uploaded.
+    if (
+        st.session_state.get('run_result')
+        and st.session_state['run_result'].get('filename') != uploaded.name
+    ):
+        st.session_state.pop('run_result', None)
 
     st.write(f"Loaded **{len(df_preview)}** rows, columns: {list(df_preview.columns)}")
     st.dataframe(df_preview.head(10), use_container_width=True)
@@ -370,6 +745,7 @@ if run_clicked and uploaded is not None and is_analytics:
         df_preview,
         use_live=use_live,
         batch_size=int(batch_size),
+        min_count=int(min_count),
     )
     progress.progress(100, text="Done.")
 
@@ -407,19 +783,16 @@ if run_clicked and uploaded is not None and is_analytics:
             f"in both the {STANDARDIZED_COLUMN!r} and {NEEDS_REVIEW_COLUMN!r} columns."
         )
 
-    # ── Export column selection ───────────────────────────────────────────────
-    st.subheader("Result")
-
     our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
     original_cols = [c for c in result_df.columns if c not in our_cols]
 
-    # Smart defaults for analytics format: Country, fieldType col, inputText col.
     ft_col_actual = next(
         (c for c in original_cols if str(c).lower().strip() == "fieldtype"), None
     )
     input_col_actual = next(
         (c for c in original_cols if str(c).lower().strip() == "inputtext"), None
     )
+
     default_keep = []
     if RESOLVED_COUNTRY_COLUMN in original_cols:
         default_keep.append(RESOLVED_COUNTRY_COLUMN)
@@ -428,38 +801,23 @@ if run_clicked and uploaded is not None and is_analytics:
     if input_col_actual:
         default_keep.append(input_col_actual)
 
-    selected_original = st.multiselect(
-        "Columns to include in export",
-        options=original_cols,
-        default=[c for c in default_keep if c in original_cols],
-        help="Standardized Value, Needs Review, and Review Reason are always included.",
-    )
-    export_df = result_df[selected_original + our_cols]
-
-    st.dataframe(export_df, use_container_width=True)
-
-    out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
-    out_path = config.OUTPUT_DIR / out_name
-    export_df.to_excel(out_path, index=False)
-
-    with open(out_path, "rb") as fh:
-        st.download_button(
-            "Download standardized file",
-            data=fh.read(),
-            file_name=out_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    _render_submit_corrections(
-        result_df=result_df,
-        field_key=None,
-        field_display=None,
-        raw_col=input_col_actual,
-        country_col=RESOLVED_COUNTRY_COLUMN if RESOLVED_COUNTRY_COLUMN in result_df.columns else None,
-        is_analytics=True,
-        ft_col=ft_col_actual,
-        input_col=input_col_actual,
-    )
+    st.session_state['run_result'] = {
+        'run_type': 'analytics',
+        'result_df': result_df,
+        'filename': uploaded.name,
+        'value_col': input_col_actual,
+        'field_col': ft_col_actual,
+        'ft_col': ft_col_actual,
+        'input_col': input_col_actual,
+        'country_col': RESOLVED_COUNTRY_COLUMN if RESOLVED_COUNTRY_COLUMN in result_df.columns else None,
+        'field_summaries': analytics_stats.field_summaries,
+        'is_analytics': True,
+        'original_cols': original_cols,
+        'default_keep': default_keep,
+        'field_key': None,
+        'field_display': None,
+        'spec': None,
+    }
 
 # ── Multi-field standard format processing ───────────────────────────────────
 
@@ -485,6 +843,7 @@ elif run_clicked and uploaded is not None and is_multi_standard:
         country_col=country_col,
         use_live=use_live,
         batch_size=int(batch_size),
+        min_count=int(min_count),
     )
     progress.progress(100, text="Done.")
 
@@ -518,38 +877,27 @@ elif run_clicked and uploaded is not None and is_multi_standard:
     if total_failed:
         st.error(f"{total_failed} batch(es) failed — rows marked in {STANDARDIZED_COLUMN!r}.")
 
-    st.subheader("Result")
     our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
     original_cols = [c for c in result_df.columns if c not in our_cols]
     default_keep = [c for c in [country_col, field_col, value_col] if c and c in original_cols]
-    selected_original = st.multiselect(
-        "Columns to include in export",
-        options=original_cols,
-        default=default_keep,
-        help="Standardized Value, Needs Review, and Review Reason are always included.",
-    )
-    export_df = result_df[selected_original + our_cols]
-    st.dataframe(export_df, use_container_width=True)
 
-    out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
-    out_path = config.OUTPUT_DIR / out_name
-    export_df.to_excel(out_path, index=False)
-    with open(out_path, "rb") as fh:
-        st.download_button(
-            "Download standardized file",
-            data=fh.read(),
-            file_name=out_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    _render_submit_corrections(
-        result_df=result_df,
-        field_key=None,
-        field_display=None,
-        raw_col=value_col,
-        country_col=country_col,
-        is_analytics=False,
-    )
+    st.session_state['run_result'] = {
+        'run_type': 'multi_field',
+        'result_df': result_df,
+        'filename': uploaded.name,
+        'value_col': value_col,
+        'field_col': field_col,
+        'ft_col': None,
+        'input_col': None,
+        'country_col': country_col,
+        'field_summaries': analytics_stats.field_summaries,
+        'is_analytics': False,
+        'original_cols': original_cols,
+        'default_keep': default_keep,
+        'field_key': None,
+        'field_display': None,
+        'spec': None,
+    }
 
 # ── Single-field standard format processing ───────────────────────────────────
 
@@ -602,10 +950,26 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
             )
 
     progress.progress(30, text="Classifying (checking cache, batching new values)…")
+    # Filter single-field files by volume column or raw value occurrence count.
+    if int(min_count) > 0:
+        _vol_col = next(
+            (c for c in df_preview.columns if str(c).strip().lower() in ("volume", "value #a")), None
+        )
+        if _vol_col:
+            df_preview = df_preview[
+                pd.to_numeric(df_preview[_vol_col], errors="coerce").fillna(0) >= int(min_count)
+            ].reset_index(drop=True)
+        else:
+            from standardize_file import _norm_key as _nk
+            _raw_series = df_preview[raw_col].apply(_nk)
+            _counts = _raw_series.value_counts()
+            df_preview = df_preview[_raw_series.map(_counts).fillna(0) >= int(min_count)].reset_index(drop=True)
+
     result_df, stats = standardize_dataframe(
         df_preview, raw_col, system_prompt, client,
         batch_size=int(batch_size), blank_fill=blank_fill,
         country_dependent=spec.country_dependent, country_column=country_col,
+        canonical_values=spec.standard_values,
     )
     progress.progress(100, text="Done.")
 
@@ -629,14 +993,8 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
             f"are marked in both the {STANDARDIZED_COLUMN!r} and {NEEDS_REVIEW_COLUMN!r} columns."
         )
 
-    st.subheader("Result")
-
-    # Export column selection — our three new columns are always included;
-    # original columns are opt-in with smart defaults.
     our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
     original_cols = [c for c in result_df.columns if c not in our_cols]
-
-    # Default: raw value column + country column (if detected) + "Field" column (if present).
     default_keep = [raw_col]
     if country_col:
         default_keep.insert(0, country_col)
@@ -646,53 +1004,93 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
     if field_col_match and field_col_match not in default_keep:
         default_keep.append(field_col_match)
 
-    selected_original = st.multiselect(
+    st.session_state['run_result'] = {
+        'run_type': 'single_field',
+        'result_df': result_df,
+        'filename': uploaded.name,
+        'value_col': raw_col,
+        'field_col': None,
+        'ft_col': None,
+        'input_col': None,
+        'country_col': country_col,
+        'field_summaries': [{'field_key': field_key, 'known': True, 'stats': stats}],
+        'is_analytics': False,
+        'original_cols': original_cols,
+        'default_keep': default_keep,
+        'field_key': field_key,
+        'field_display': spec.display_name,
+        'spec': spec,
+    }
+
+# ── Post-run display (persistent across reruns via session state) ─────────────
+_rr = st.session_state.get('run_result')
+if _rr is not None:
+    _result_df = _render_flagged_review(_rr)
+
+    if _rr.get('value_col'):
+        _render_run_summary(
+            _result_df,
+            _rr['value_col'],
+            field_summaries=_rr.get('field_summaries'),
+            field_col=_rr.get('field_col'),
+        )
+
+    _our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    st.subheader("Result")
+    _selected_original = st.multiselect(
         "Columns to include in export",
-        options=original_cols,
-        default=[c for c in default_keep if c in original_cols],
+        options=_rr['original_cols'],
+        default=[c for c in _rr['default_keep'] if c in _rr['original_cols']],
         help="Standardized Value, Needs Review, and Review Reason are always included.",
     )
-    export_df = result_df[selected_original + our_cols]
+    _export_df = _result_df[
+        [c for c in _selected_original if c in _result_df.columns]
+        + [c for c in _our_cols if c in _result_df.columns]
+    ]
+    st.dataframe(_export_df, use_container_width=True)
 
-    st.dataframe(export_df, use_container_width=True)
-
-    out_name = f"{Path(uploaded.name).stem}_standardized.xlsx"
-    out_path = config.OUTPUT_DIR / out_name
-    export_df.to_excel(out_path, index=False)
-
-    with open(out_path, "rb") as fh:
+    _out_name = f"{Path(_rr['filename']).stem}_standardized.xlsx"
+    _out_path = config.OUTPUT_DIR / _out_name
+    _export_df.to_excel(_out_path, index=False)
+    with open(_out_path, "rb") as _fh:
         st.download_button(
             "Download standardized file",
-            data=fh.read(),
-            file_name=out_name,
+            data=_fh.read(),
+            file_name=_out_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    _render_pending_lookup_saves(_rr)
+    _render_lookup_update(_rr['field_summaries'])
+    _render_manual_lookup_add(_rr['field_summaries'])
+
     _render_submit_corrections(
-        result_df=result_df,
-        field_key=field_key,
-        field_display=spec.display_name,
-        raw_col=raw_col,
-        country_col=country_col,
-        is_analytics=False,
+        result_df=_result_df,
+        field_key=_rr.get('field_key'),
+        field_display=_rr.get('field_display'),
+        raw_col=_rr.get('value_col'),
+        country_col=_rr.get('country_col'),
+        is_analytics=_rr['is_analytics'],
+        ft_col=_rr.get('ft_col'),
+        input_col=_rr.get('input_col'),
     )
 
-    # Section 5 item 8 — ready-to-paste Jira ticket content (not a live Jira
-    # API call — see Section 6). Copy this straight into a new ticket.
-    st.subheader("Jira ticket content")
-    st.caption(
-        "Ready to paste into a new Jira ticket for the engineering handoff — "
-        "not a live Jira integration (that's deferred; see Section 6 of the brief)."
-    )
-    countries = find_countries(df_preview)
-    ticket_text = build_ticket_text(spec.display_name, raw_col, countries, out_name)
-    st.text_area("Ticket title + description", value=ticket_text, height=280)
-    st.download_button(
-        "Download ticket text (.txt)",
-        data=ticket_text,
-        file_name=f"{Path(uploaded.name).stem}_jira_ticket.txt",
-        mime="text/plain",
-    )
+    if _rr['run_type'] == 'single_field' and _rr.get('spec'):
+        _spec = _rr['spec']
+        st.subheader("Jira ticket content")
+        st.caption(
+            "Ready to paste into a new Jira ticket for the engineering handoff — "
+            "not a live Jira integration (that's deferred; see Section 6 of the brief)."
+        )
+        _countries = find_countries(_result_df)
+        _ticket_text = build_ticket_text(_spec.display_name, _rr['value_col'], _countries, _out_name)
+        st.text_area("Ticket title + description", value=_ticket_text, height=280)
+        st.download_button(
+            "Download ticket text (.txt)",
+            data=_ticket_text,
+            file_name=f"{Path(_rr['filename']).stem}_jira_ticket.txt",
+            mime="text/plain",
+        )
 
-elif uploaded is None:
+if uploaded is None and not st.session_state.get('run_result'):
     st.info("Upload a file to get started.")

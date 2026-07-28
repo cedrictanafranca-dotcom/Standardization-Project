@@ -22,7 +22,6 @@ Output Format
 Before processing, count the total number of input entries.  
 Your output list must contain exactly that many items — no more, no fewer.  
 Number each output to match its corresponding input (e.g., 1\. Owner / Beneficial Owner, 2\. Other / Unclassified).  
-Return a single standardized value per line — no explanations, reasoning, or commentary.  
 Do not skip, merge, or combine any inputs.  
 If uncertain, map to Other / Unclassified rather than omitting.  
 After your final item: \[Total: X of Y mapped\]

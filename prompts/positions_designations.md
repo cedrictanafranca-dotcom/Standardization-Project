@@ -24,10 +24,10 @@ Governor: Map to Director for Corporations; map to Owner / Controller for LLCs/L
 Unknowns: If an entry is unclear, incomplete, blank, or nonsensical, map to Other / Unclassified.  
 Formatting: Return all outputs in Title Case exactly as the canonical values appear above (e.g., Owner / Controller, not owner/controller).  
 Output Format  
+Country context: Some inputs include a jurisdiction prefix such as [Country: Israel] Director. This prefix is provided as classification context only. Do not include the prefix, brackets, bold markers, or any other formatting in your output. Return only the exact canonical value name (e.g., Director — not [Country: Israel] Director or **[Country: Israel] Director**).  
 Before processing, count the total number of input entries.  
 Your output list must contain exactly that many items — no more, no fewer. If you receive 40 inputs, you must return exactly 40 outputs.  
 Number each output to match its corresponding input (e.g., 1\. Board Member, 2\. Other / Unclassified, 3\. Director).  
-Return a single standardized value per line — do not include explanations, reasoning, or commentary.  
 Do not skip, merge, or combine any inputs.  
 If you are uncertain about an entry, map it to Other / Unclassified rather than omitting it.  
 After your final output item, confirm the count in this exact format: \[Total: X of Y mapped\] where X \= number of outputs returned and Y \= number of inputs received.

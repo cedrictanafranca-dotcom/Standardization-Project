@@ -31,6 +31,7 @@ from standardize_file import (
     NEEDS_REVIEW_COLUMN,
     REVIEW_REASON_COLUMN,
     STANDARDIZED_COLUMN,
+    _norm_key,
     standardize_dataframe,
 )
 
@@ -73,6 +74,9 @@ FIELD_TYPE_MAP: dict[str, str] = {
     "business legal form": "business_legal_form",
     "universal business legal form": "business_legal_form",
     "business status": "business_status",
+    "universal business status": "business_status",
+    "universal position": "positions_designations",
+    "universal beneficiary type": "psc_beneficiary_type",
     "psc beneficiary type": "psc_beneficiary_type",
     "brn type": "brn_type",
     "directors officers type": "directors_officers_type",
@@ -142,6 +146,7 @@ def process_analytics_df(
     df: pd.DataFrame,
     use_live: bool,
     batch_size: int,
+    min_count: int = 0,
 ) -> tuple[pd.DataFrame, AnalyticsStats]:
     """Classify an analytics-format DataFrame.
 
@@ -157,6 +162,16 @@ def process_analytics_df(
     Returns the enriched DataFrame (original columns + Standardized Value /
     Needs Review / Review Reason) and an AnalyticsStats summary.
     """
+    # Drop rows below the minimum count threshold before any processing.
+    if min_count > 0:
+        count_col = next(
+            (c for c in df.columns if str(c).strip().lower() in ("value #a", "volume")), None
+        )
+        if count_col:
+            df = df[
+                pd.to_numeric(df[count_col], errors="coerce").fillna(0) >= min_count
+            ].reset_index(drop=True)
+
     ft_col = _find_col(df, "fieldtype")
     input_col = _find_col(df, "inputtext")
 
@@ -215,6 +230,7 @@ def process_analytics_df(
             country_dependent=spec.country_dependent,
             country_column=RESOLVED_COUNTRY_COLUMN if spec.country_dependent else None,
             field_key=field_key,
+            canonical_values=spec.standard_values,
         )
 
         # Write results back into the correct rows of the full DataFrame.
@@ -272,6 +288,7 @@ def process_standard_multi_field_df(
     country_col: str | None,
     use_live: bool,
     batch_size: int,
+    min_count: int = 0,
 ) -> tuple[pd.DataFrame, AnalyticsStats]:
     """Classify a standard-format DataFrame that has a mixed 'Field' column.
 
@@ -280,6 +297,24 @@ def process_standard_multi_field_df(
     process_analytics_df but without the countryId resolution step.
     """
     field_col = next(c for c in df.columns if str(c).strip().lower() == "field")
+
+    # Drop rows below the minimum count threshold.
+    if min_count > 0:
+        count_col = next(
+            (c for c in df.columns if str(c).strip().lower() in ("volume", "value #a")), None
+        )
+        if count_col:
+            df = df[
+                pd.to_numeric(df[count_col], errors="coerce").fillna(0) >= min_count
+            ].reset_index(drop=True)
+        else:
+            # No volume column — count duplicate raw values within each field group.
+            keep_parts = []
+            for _, grp in df.groupby(field_col, dropna=False):
+                raw_series = grp[value_col].apply(_norm_key)
+                counts = raw_series.value_counts()
+                keep_parts.append(grp[raw_series.map(counts).fillna(0) >= min_count])
+            df = pd.concat(keep_parts).sort_index().reset_index(drop=True) if keep_parts else df.iloc[0:0]
 
     result = df.copy()
     result[STANDARDIZED_COLUMN] = ""
@@ -326,6 +361,7 @@ def process_standard_multi_field_df(
             country_dependent=spec.country_dependent,
             country_column=effective_country_col,
             field_key=field_key,
+            canonical_values=spec.standard_values,
         )
 
         result.loc[group_idx, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN].values

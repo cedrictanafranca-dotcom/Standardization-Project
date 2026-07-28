@@ -69,3 +69,31 @@ def has_real_api_key() -> bool:
 def get_model() -> str:
     """Return the configured model id, falling back to the project default."""
     return os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_MODEL
+
+
+# ---------------------------------------------------------------------------
+# S3 configuration (optional — falls back to local file when not set).
+# ---------------------------------------------------------------------------
+
+def get_s3_config() -> dict | None:
+    """Return S3 config if all required env vars are set, else None.
+
+    Required env vars:
+        S3_BUCKET_NAME   — bucket where master_lookup.json is stored
+        AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY — IAM credentials
+        AWS_REGION       — e.g. us-east-1 (defaults to us-east-1 if unset)
+
+    Returns None when any required var is missing → caller falls back to local file.
+    """
+    bucket = os.environ.get("S3_BUCKET_NAME", "").strip()
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    if not (bucket and access_key and secret_key):
+        return None
+    return {
+        "bucket": bucket,
+        "key": "master_lookup.json",
+        "region": os.environ.get("AWS_REGION", "us-east-1").strip(),
+        "access_key": access_key,
+        "secret_key": secret_key,
+    }

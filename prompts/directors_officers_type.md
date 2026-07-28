@@ -14,7 +14,6 @@ Output Format
 Before processing, count the total number of input entries.  
 Your output list must contain exactly that many items — no more, no fewer.  
 Number each output to match its corresponding input (e.g., 1\. Individual, 2\. Business).  
-Return a single standardized value per line — do not include explanations, reasoning, or commentary.  
 Do not skip, merge, or combine any inputs.  
 If uncertain about an entry, map to Other / Unclassified rather than omitting it.  
 After your final output item, confirm the count in this exact format: \[Total: X of Y mapped\] where X \= number of outputs returned and Y \= number of inputs received.

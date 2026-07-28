@@ -439,20 +439,134 @@ def build_from_master_file(
     return lookups
 
 
-def load_lookup(lookup_file: Path = DEFAULT_LOOKUP_FILE) -> dict[str, FieldLookup]:
-    """Load master_lookup.json into a dict of FieldLookup objects.
+def _s3_client(cfg: dict):
+    """Return a boto3 S3 client from a config dict."""
+    import boto3
+    return boto3.client(
+        "s3",
+        region_name=cfg["region"],
+        aws_access_key_id=cfg["access_key"],
+        aws_secret_access_key=cfg["secret_key"],
+    )
 
-    Returns an empty dict (gracefully) if the file doesn't exist — the
-    pipeline continues without the lookup and sends everything to the API.
-    """
-    if not lookup_file.exists():
+
+def _load_json_from_s3(cfg: dict) -> dict:
+    """Download and parse master_lookup.json from S3. Returns {} on any error."""
+    try:
+        client = _s3_client(cfg)
+        response = client.get_object(Bucket=cfg["bucket"], Key=cfg["key"])
+        return json.loads(response["Body"].read().decode("utf-8"))
+    except Exception as exc:
+        print(f"[S3] Could not load lookup from S3: {exc} — falling back to local file.")
         return {}
 
-    raw = json.loads(lookup_file.read_text(encoding="utf-8"))
+
+def _save_json_to_s3(cfg: dict, data: dict) -> bool:
+    """Upload data as master_lookup.json to S3. Returns True on success."""
+    try:
+        client = _s3_client(cfg)
+        client.put_object(
+            Bucket=cfg["bucket"],
+            Key=cfg["key"],
+            Body=json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+        return True
+    except Exception as exc:
+        print(f"[S3] Could not save lookup to S3: {exc}")
+        return False
+
+
+def merge_api_results(
+    field_key: str,
+    new_mappings: dict,
+    country_dependent: bool,
+    lookup_file: Path = DEFAULT_LOOKUP_FILE,
+) -> int:
+    """Merge new mappings into the lookup (S3 if configured, else local file).
+
+    Only adds entries not already present — never overwrites existing mappings.
+    Returns the count of new entries added.
+    """
+    if not new_mappings:
+        return 0
+
+    import config as _config
+    s3_cfg = _config.get_s3_config()
+
+    # Load existing data from S3 or local file.
+    if s3_cfg:
+        data = _load_json_from_s3(s3_cfg)
+        if not data and lookup_file.exists():
+            # S3 empty/new — seed from local file.
+            data = json.loads(lookup_file.read_text(encoding="utf-8"))
+    elif lookup_file.exists():
+        data = json.loads(lookup_file.read_text(encoding="utf-8"))
+    else:
+        return 0
+
+    field_data = data.get(field_key, {"consistent": {}, "by_country": {}})
+    consistent = field_data.get("consistent", {})
+    by_country = field_data.get("by_country", {})
+
+    added = 0
+    for (country, raw_val), std_val in new_mappings.items():
+        if not raw_val or not std_val:
+            continue
+        if country_dependent and country:
+            country_map = by_country.setdefault(country, {})
+            if raw_val not in country_map and raw_val not in consistent:
+                country_map[raw_val] = std_val
+                added += 1
+        else:
+            if raw_val not in consistent:
+                consistent[raw_val] = std_val
+                added += 1
+
+    if added == 0:
+        return 0
+
+    field_data["consistent"] = consistent
+    field_data["by_country"] = by_country
+    data[field_key] = field_data
+
+    # Save back to S3 and local file.
+    if s3_cfg:
+        _save_json_to_s3(s3_cfg, data)
+    lookup_file.parent.mkdir(parents=True, exist_ok=True)
+    lookup_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return added
+
+
+def load_lookup(lookup_file: Path = DEFAULT_LOOKUP_FILE) -> dict[str, FieldLookup]:
+    """Load the lookup from S3 if configured, otherwise from the local file.
+
+    S3 is the source of truth when credentials are present — it always has the
+    latest version regardless of which machine last updated it.
+    Falls back to local file gracefully so local development keeps working.
+    """
+    import config as _config
+    s3_cfg = _config.get_s3_config()
+
+    if s3_cfg:
+        data = _load_json_from_s3(s3_cfg)
+        if data:
+            # Also write a local copy so the app works if S3 is temporarily unreachable.
+            lookup_file.parent.mkdir(parents=True, exist_ok=True)
+            lookup_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        else:
+            # S3 failed or empty — fall back to local.
+            if lookup_file.exists():
+                data = json.loads(lookup_file.read_text(encoding="utf-8"))
+    elif lookup_file.exists():
+        data = json.loads(lookup_file.read_text(encoding="utf-8"))
+    else:
+        return {}
+
     lookups: dict[str, FieldLookup] = {}
-    for field_key, data in raw.items():
-        lk = FieldLookup(field_key=field_key)
-        lk.consistent = data.get("consistent", {})
-        lk.by_country = data.get("by_country", {})
-        lookups[field_key] = lk
+    for fk, fdata in data.items():
+        lk = FieldLookup(field_key=fk)
+        lk.consistent = fdata.get("consistent", {})
+        lk.by_country = fdata.get("by_country", {})
+        lookups[fk] = lk
     return lookups
