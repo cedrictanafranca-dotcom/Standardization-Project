@@ -71,6 +71,14 @@ output/                       — Standardized Excel output files written here
 
 ## Classification Pipeline
 
+**Predictive lookup extension (2026-07-29):** After exact lookup and local
+artifact filtering, the pipeline compares unseen values with approved mappings.
+Near-identical variants are predicted automatically only when the closest
+labels strongly agree. Other similar mappings are supplied to Claude as
+field- and country-appropriate historical examples. Run statistics separately
+report exact lookup hits, predictive lookup decisions, and retrieval-assisted
+API classifications.
+
 1. Load file → detect format (analytics / multi-tab / multi-field / single-field)
 2. **Pre-flight lookup** — check `data/master_lookup.json` first; known values get HIGH confidence with no API call
 3. **System artifact filter** — ALL_CAPS_SNAKE_CASE values (e.g. MASKED_WHOIS_DATA) → catch-all, LOW

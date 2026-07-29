@@ -23,9 +23,12 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field as dc_field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +47,29 @@ DEFAULT_MASTER_FILE = (
     Path.home() / "Downloads" / "[FINAL]- ALL Countries GG Standardization Remapping.xlsx"
 )
 DEFAULT_LOOKUP_FILE = config.DATA_DIR / "master_lookup.json"
+
+SIMILARITY_EXAMPLE_MIN_SCORE = 0.45
+SIMILARITY_AUTO_SCORE = 0.97
+SIMILARITY_AUTO_MARGIN = 0.12
+
+
+@dataclass(frozen=True)
+class SimilarityMatch:
+    """One approved lookup entry similar to a previously unseen raw value."""
+
+    raw_value: str
+    standardized_value: str
+    score: float
+    country: str = ""
+
+
+@dataclass(frozen=True)
+class SimilarityPrediction:
+    """A conservative prediction backed by strongly agreeing lookup entries."""
+
+    standardized_value: str
+    score: float
+    matches: tuple[SimilarityMatch, ...]
 
 # Sheet names in the master file — hand-mapped (brief Section 9).
 SHEET_BY_FIELD: dict[str, str] = {
@@ -221,6 +247,12 @@ class FieldLookup:
     field_key: str
     consistent: dict[str, str] = dc_field(default_factory=dict)
     by_country: dict[str, dict[str, str]] = dc_field(default_factory=dict)
+    _similarity_cache: dict[str, list[tuple[str, str, str, str]]] = dc_field(
+        default_factory=dict, init=False, repr=False,
+    )
+    _normalized_cache: dict[
+        str, dict[str, list[tuple[str, str, str, str]]]
+    ] = dc_field(default_factory=dict, init=False, repr=False)
 
     def get(self, raw_value: str, country: str = "") -> Optional[str]:
         """Return the standardized value, or None if not in the lookup."""
@@ -235,6 +267,128 @@ class FieldLookup:
                 return result
         # Country-agnostic fallback.
         return self.consistent.get(raw_n)
+
+    def similar(
+        self,
+        raw_value: str,
+        country: str = "",
+        *,
+        limit: int = 3,
+        min_score: float = SIMILARITY_EXAMPLE_MIN_SCORE,
+    ) -> list[SimilarityMatch]:
+        """Return the closest approved mappings for retrieval-assisted classification.
+
+        Country-specific mappings for the requested country override global
+        mappings with the same raw key. Entries from other countries are never
+        used as evidence.
+        """
+        query = _similarity_key(raw_value)
+        if not query:
+            return []
+
+        country_n = _norm(country)
+        candidates = self._similarity_candidates(country_n)
+
+        matches: list[SimilarityMatch] = []
+        for candidate_raw, standardized, candidate_country, candidate_key in candidates:
+            score = _similarity_score(query, candidate_key)
+            if score >= min_score:
+                matches.append(SimilarityMatch(
+                    raw_value=candidate_raw,
+                    standardized_value=standardized,
+                    score=score,
+                    country=candidate_country,
+                ))
+
+        matches.sort(key=lambda m: (-m.score, m.raw_value.casefold()))
+        return matches[:limit]
+
+    def _similarity_candidates(
+        self, country_n: str,
+    ) -> list[tuple[str, str, str, str]]:
+        """Build the normalized candidate index once per field/country."""
+        cached = self._similarity_cache.get(country_n)
+        if cached is not None:
+            return cached
+
+        candidates: dict[str, tuple[str, str]] = {
+            raw: (std, "") for raw, std in self.consistent.items()
+        }
+        if country_n and country_n in self.by_country:
+            candidates.update({
+                raw: (std, country_n)
+                for raw, std in self.by_country[country_n].items()
+            })
+        indexed = [
+            (raw, standardized, candidate_country, _similarity_key(raw))
+            for raw, (standardized, candidate_country) in candidates.items()
+        ]
+        self._similarity_cache[country_n] = indexed
+        normalized: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)
+        for candidate in indexed:
+            normalized[candidate[3]].append(candidate)
+        self._normalized_cache[country_n] = dict(normalized)
+        return indexed
+
+    def predict_similar(
+        self,
+        raw_value: str,
+        country: str = "",
+    ) -> Optional[SimilarityPrediction]:
+        """Predict only when a near-identical set of lookup examples agrees.
+
+        Broader semantic/fuzzy matches remain examples for Claude rather than
+        becoming automatic decisions.
+        """
+        query = _similarity_key(raw_value)
+        country_n = _norm(country)
+        self._similarity_candidates(country_n)
+        normalized_matches = self._normalized_cache[country_n].get(query, [])
+        if normalized_matches:
+            labels = {candidate[1] for candidate in normalized_matches}
+            if len(labels) != 1:
+                return None
+            exact_matches = tuple(
+                SimilarityMatch(
+                    raw_value=candidate_raw,
+                    standardized_value=standardized,
+                    score=1.0,
+                    country=candidate_country,
+                )
+                for candidate_raw, standardized, candidate_country, _ in normalized_matches[:3]
+            )
+            return SimilarityPrediction(
+                standardized_value=normalized_matches[0][1],
+                score=1.0,
+                matches=exact_matches,
+            )
+
+        matches = self.similar(raw_value, country, limit=8)
+        if not matches:
+            return None
+
+        top = matches[0]
+        if top.score < SIMILARITY_AUTO_SCORE:
+            return None
+        if len(query) < 4 and top.score < 1.0:
+            return None
+
+        near_top = [m for m in matches if m.score >= max(0.75, top.score - 0.04)]
+        if any(m.standardized_value != top.standardized_value for m in near_top):
+            return None
+
+        best_other = max(
+            (m.score for m in matches if m.standardized_value != top.standardized_value),
+            default=0.0,
+        )
+        if best_other and top.score - best_other < SIMILARITY_AUTO_MARGIN:
+            return None
+
+        return SimilarityPrediction(
+            standardized_value=top.standardized_value,
+            score=top.score,
+            matches=tuple(matches[:3]),
+        )
 
     @property
     def consistent_count(self) -> int:
@@ -256,6 +410,45 @@ class FieldLookup:
 def _norm(s: str | None) -> str:
     """Whitespace-collapse only — matches _norm_key in standardize_file.py."""
     return " ".join(str(s).split()) if s is not None else ""
+
+
+def _similarity_key(s: str | None) -> str:
+    """Normalize casing, accents, and punctuation for similarity only."""
+    if s is None:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", str(s).casefold())
+    without_marks = "".join(
+        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
+    )
+    return " ".join(re.sub(r"[^\w]+", " ", without_marks).split())
+
+
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    padded = f" {text} "
+    if len(padded) <= n:
+        return {padded}
+    return {padded[i:i + n] for i in range(len(padded) - n + 1)}
+
+
+def _similarity_score(left: str, right: str) -> float:
+    """Combine spelling, token, and character-pattern similarity."""
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+
+    sequence = SequenceMatcher(None, left, right).ratio()
+    left_tokens, right_tokens = set(left.split()), set(right.split())
+    token_union = left_tokens | right_tokens
+    token_score = (
+        len(left_tokens & right_tokens) / len(token_union) if token_union else 0.0
+    )
+    left_grams, right_grams = _char_ngrams(left), _char_ngrams(right)
+    gram_score = (
+        2 * len(left_grams & right_grams) / (len(left_grams) + len(right_grams))
+        if left_grams or right_grams else 0.0
+    )
+    return max(sequence, token_score, gram_score)
 
 
 def _fix_label(std_value: str) -> str:

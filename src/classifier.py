@@ -114,7 +114,10 @@ class BatchResult:
 # ---------------------------------------------------------------------------
 # The contract: input framing + output parsing
 # ---------------------------------------------------------------------------
-def build_user_message(raw_values: list[str]) -> str:
+def build_user_message(
+    raw_values: list[str],
+    approved_examples: list[list[tuple[str, str, float]]] | None = None,
+) -> str:
     """Frame the raw values as the numbered input the system prompt expects.
 
     Newlines inside a single raw value are collapsed so every entry stays on
@@ -124,6 +127,27 @@ def build_user_message(raw_values: list[str]) -> str:
     for i, value in enumerate(raw_values, start=1):
         one_line = " ".join(str(value).splitlines()).strip()
         lines.append(f"{i}. {one_line}")
+    if approved_examples and any(approved_examples):
+        lines.extend([
+            "",
+            "Approved historical mappings for context:",
+            "Use these as evidence alongside the taxonomy instructions. They are not additional inputs.",
+        ])
+        for i, examples in enumerate(approved_examples, start=1):
+            if not examples:
+                continue
+            lines.append(f"Examples relevant to input {i}:")
+            for raw, standardized, score in examples:
+                raw_one_line = " ".join(str(raw).splitlines()).strip()[:200]
+                lines.append(
+                    f"- {raw_one_line!r} => {standardized!r} "
+                    f"(text similarity {score:.0%})"
+                )
+        lines.extend([
+            "",
+            f"Return exactly {len(raw_values)} numbered classifications for the original inputs only.",
+            "Do not classify or output the historical examples.",
+        ])
     return "\n".join(lines)
 
 
@@ -564,8 +588,9 @@ def classify_values(
     raw_values: list[str],
     system_prompt: str,
     client: ClaudeClient,
+    approved_examples: list[list[tuple[str, str, float]]] | None = None,
 ) -> BatchResult:
     """Send one batch of raw values through the given client and parse the result."""
-    user_message = build_user_message(raw_values)
+    user_message = build_user_message(raw_values, approved_examples)
     response_text = client.complete(system_prompt, user_message)
     return parse_response(response_text, raw_values)

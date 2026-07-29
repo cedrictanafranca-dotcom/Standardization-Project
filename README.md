@@ -5,7 +5,11 @@ relationship values in, returns standardized (canonical) values out, using the
 classification logic already refined in Claude Projects. Built solo with Claude
 Code. See the Master Project Brief for full context.
 
-Currently at: **Phase 0 + Step 1 — project skeleton** (per Section 7 of the brief).
+Current state: **working end-to-end pilot undergoing accuracy validation and
+production hardening**. The Streamlit application supports multiple input
+formats, exact and predictive lookup, retrieval-assisted Claude
+classification, review/correction workflows, and downloadable Excel results.
+See `CLAUDE.md` for the detailed architecture and current known issues.
 
 ## Layout
 

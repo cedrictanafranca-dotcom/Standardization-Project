@@ -70,7 +70,7 @@ import run_log
 from classifier import CONFIDENCE_ADDENDUM, MockClaudeClient, RealClaudeClient, classify_values
 from fault_injection import FlakyClient, rate_limit_error, server_error
 from jira_ticket import build_ticket_text, find_countries
-from master_lookup import load_lookup
+from master_lookup import SimilarityMatch, load_lookup
 from retry import RetryExhaustedError, call_with_retry
 
 # Load the master lookup once at module import time.  Returns an empty dict
@@ -121,6 +121,8 @@ class Stats:
     batch_size: int
     api_calls_saved: int  # rows that did NOT need an API call (dupes + blanks)
     lookup_hits: int = 0   # unique values resolved from the master lookup (no API call)
+    similarity_predictions: int = 0  # conservative fuzzy predictions (no API call)
+    retrieval_assisted: int = 0  # API values supplied with approved similar examples
     flagged_count: int = 0  # rows marked Needs Review (LOW/missing confidence, blanks, failures)
     retries_used: int = 0
     failed_batches: list[run_log.BatchFailure] = field(default_factory=list)
@@ -273,6 +275,8 @@ def standardize_dataframe(
     mapping: dict[tuple[str, str], tuple[str, str, list, str]] = {}
     to_classify: list[tuple[str, str]] = []
     lookup_hits = 0
+    similarity_predictions = 0
+    retrieval_examples: dict[tuple[str, str], list[SimilarityMatch]] = {}
 
     if field_lookup is not None:
         for k in unique_nonblank:
@@ -315,11 +319,39 @@ def standardize_dataframe(
             filtered_to_classify2.append(k)
     to_classify = filtered_to_classify2
 
+    # Predict only near-identical variants with strong label agreement. Broader
+    # matches are retained as approved examples for Claude. This runs after the
+    # artifact/placeholder filters so noisy no-data values can never borrow a
+    # real business classification from a vaguely similar lookup entry.
+    if field_lookup is not None:
+        still_unresolved: list[tuple[str, str]] = []
+        for k in to_classify:
+            country, raw = k
+            prediction = field_lookup.predict_similar(raw, country)
+            if prediction is not None:
+                example = prediction.matches[0]
+                confidence = "HIGH" if prediction.score == 1.0 else "MEDIUM"
+                reasoning = (
+                    f"Predicted from approved mapping {example.raw_value!r} "
+                    f"({prediction.score:.0%} text similarity)."
+                )
+                mapping[k] = (
+                    prediction.standardized_value, confidence, [], reasoning,
+                )
+                similarity_predictions += 1
+            else:
+                examples = field_lookup.similar(raw, country)
+                if examples:
+                    retrieval_examples[k] = examples
+                still_unresolved.append(k)
+        to_classify = still_unresolved
+
     # 4.1 chunking: never send the whole file as one call.
     warnings: list[str] = []
     failed_batches: list[run_log.BatchFailure] = []
     n_batches = 0
     retries_used = 0
+    retrieval_assisted = sum(1 for k in to_classify if retrieval_examples.get(k))
 
     def _on_retry(attempt: int, exc: Exception, delay: float) -> None:
         nonlocal retries_used
@@ -336,6 +368,17 @@ def standardize_dataframe(
         display_values = [
             f"[Country: {country}] {raw}" if country else raw for country, raw in chunk
         ]
+        approved_examples = [
+            [
+                (
+                    f"[Country: {m.country}] {m.raw_value}" if m.country else m.raw_value,
+                    m.standardized_value,
+                    m.score,
+                )
+                for m in retrieval_examples.get(k, [])
+            ]
+            for k in chunk
+        ]
         try:
             # 4.2 retry/backoff wraps the whole classify call (build message +
             # API call + parse) — the API call inside is what can actually fail.
@@ -344,6 +387,7 @@ def standardize_dataframe(
                 display_values,
                 system_prompt,
                 client,
+                approved_examples,
                 max_attempts=max_attempts,
                 base_delay=retry_base_delay,
                 on_retry=_on_retry,
@@ -439,8 +483,13 @@ def standardize_dataframe(
         duplicates_collapsed=non_blank_rows - len(unique_nonblank),
         batches=n_batches,
         batch_size=batch_size,
-        api_calls_saved=(non_blank_rows - len(unique_nonblank)) + blanks + lookup_hits,
+        api_calls_saved=(
+            (non_blank_rows - len(unique_nonblank))
+            + blanks + lookup_hits + similarity_predictions
+        ),
         lookup_hits=lookup_hits,
+        similarity_predictions=similarity_predictions,
+        retrieval_assisted=retrieval_assisted,
         flagged_count=sum(1 for v in needs_review if v.startswith(NEEDS_REVIEW_COLUMN)),
         retries_used=retries_used,
         failed_batches=failed_batches,
@@ -605,10 +654,12 @@ def main() -> int:
     print(f"  blank/empty raw       : {stats.blanks}  (filled as {blank_fill!r}, no API call)")
     print(f"  unique values         : {stats.unique_values}")
     print(f"  lookup hits           : {stats.lookup_hits}  (resolved from master table, no API call)")
-    print(f"  sent to classifier    : {stats.unique_values - stats.lookup_hits}")
+    print(f"  similarity predictions: {stats.similarity_predictions}  (near-identical approved mappings)")
+    print(f"  retrieval-assisted    : {stats.retrieval_assisted}  (classifier received approved examples)")
+    print(f"  sent to classifier    : {stats.unique_values - stats.lookup_hits - stats.similarity_predictions}")
     print(f"  duplicates reused     : {stats.duplicates_collapsed}")
     print(f"  API batches           : {stats.batches}  (size {stats.batch_size})")
-    print(f"  rows needing no call  : {stats.api_calls_saved}  (dupes + blanks + lookup hits)")
+    print(f"  rows needing no call  : {stats.api_calls_saved}  (dupes + blanks + lookup/prediction hits)")
     print(f"  flagged for review    : {stats.flagged_count}  "
           f"(LOW/missing confidence, blanks, or API failures — see {NEEDS_REVIEW_COLUMN!r} + {REVIEW_REASON_COLUMN!r} columns)")
     print(f"  all columns preserved : {'YES' if passthrough_ok else 'NO'}")

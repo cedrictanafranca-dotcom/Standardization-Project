@@ -817,7 +817,10 @@ if run_clicked and uploaded is not None and is_analytics:
             f"**{fs['field_type']}** ({fs['display_name']}) — "
             f"{s.total_rows} rows, {classified} classified, "
             f"{s.blanks} blank, {s.unique_values} unique values "
-            f"({s.api_calls_saved} rows needed no API call)."
+            f"({s.api_calls_saved} rows needed no API call; "
+            f"{s.lookup_hits} exact lookup, "
+            f"{s.similarity_predictions} predictive lookup, "
+            f"{s.retrieval_assisted} retrieval-assisted API)."
         )
         total_flagged += s.flagged_count
         total_failed += len(s.failed_batches)
@@ -915,7 +918,10 @@ elif run_clicked and uploaded is not None and is_multi_standard:
             f"**{fs['field_type']}** ({fs['display_name']}) — "
             f"{s.total_rows} rows, {classified} classified, "
             f"{s.blanks} blank, {s.unique_values} unique values "
-            f"({s.api_calls_saved} rows needed no API call)."
+            f"({s.api_calls_saved} rows needed no API call; "
+            f"{s.lookup_hits} exact lookup, "
+            f"{s.similarity_predictions} predictive lookup, "
+            f"{s.retrieval_assisted} retrieval-assisted API)."
         )
         total_flagged += s.flagged_count
         total_failed += len(s.failed_batches)
@@ -1026,6 +1032,7 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
         df_preview, raw_col, system_prompt, client,
         batch_size=int(batch_size), blank_fill=blank_fill,
         country_dependent=spec.country_dependent, country_column=country_col,
+        field_key=field_key,
         canonical_values=spec.standard_values,
     )
     progress.progress(100, text="Done.")
@@ -1037,6 +1044,12 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
         f"({stats.duplicates_collapsed} duplicates reused, {stats.api_calls_saved} rows "
         "needed no API call)."
     )
+    if stats.similarity_predictions or stats.retrieval_assisted:
+        st.info(
+            f"Approved mappings also supported this run: "
+            f"{stats.similarity_predictions} similar value(s) predicted without an API call; "
+            f"{stats.retrieval_assisted} API value(s) received relevant historical examples."
+        )
     if stats.flagged_count:
         st.warning(
             f"{stats.flagged_count} row(s) flagged in the {NEEDS_REVIEW_COLUMN!r} column "
