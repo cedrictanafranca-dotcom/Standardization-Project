@@ -511,6 +511,9 @@ def merge_api_results(
 
     added = 0
     for (country, raw_val), std_val in new_mappings.items():
+        # Normalise keys (collapse whitespace) to match how the pipeline looks them up.
+        raw_val = " ".join(str(raw_val).split()) if raw_val else ""
+        country = " ".join(str(country).split()) if country else ""
         if not raw_val or not std_val:
             continue
         if country_dependent and country:
@@ -523,14 +526,11 @@ def merge_api_results(
                 consistent[raw_val] = std_val
                 added += 1
 
-    if added == 0:
-        return 0
-
     field_data["consistent"] = consistent
     field_data["by_country"] = by_country
     data[field_key] = field_data
 
-    # Save back to S3 and local file.
+    # Always save when called — even if added==0, the caller may be forcing a refresh.
     if s3_cfg:
         _save_json_to_s3(s3_cfg, data)
     lookup_file.parent.mkdir(parents=True, exist_ok=True)

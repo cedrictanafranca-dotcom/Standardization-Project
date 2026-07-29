@@ -179,15 +179,23 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
     if not flagged_idx:
         return result_df
 
-    # Build field-type → standard_values map for multi-field / analytics runs.
+    # Build field-type → standard_values and display_name maps for multi-field runs.
     field_std_vals: dict[str, list] = {}
+    field_display_names: dict[str, str] = {}
     for fs in rr.get("field_summaries", []):
         if fs.get("known") and fs.get("field_key"):
             try:
                 sp = fields.get(fs["field_key"])
-                field_std_vals[str(fs.get("field_type", "")).strip()] = sp.standard_values
+                ft_key = str(fs.get("field_type", "")).strip()
+                field_std_vals[ft_key] = sp.standard_values
+                field_display_names[ft_key] = fs.get("display_name") or sp.display_name
             except Exception:
                 pass
+
+    # For single-field runs, use the run-level display name.
+    single_field_display = rr.get("field_display") or (
+        rr["spec"].display_name if rr.get("spec") else None
+    )
 
     st.subheader(f"Review {len(flagged_idx)} Flagged Row(s)")
     st.caption(
@@ -243,13 +251,21 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
             elif current_std in options:
                 default_idx = options.index(current_std)
 
-            # Header line: raw value · country · field type
+            # Resolve human-readable field type label.
+            if ft_val and ft_val in field_display_names:
+                field_label = field_display_names[ft_val]
+            elif run_type == "single_field" and single_field_display:
+                field_label = single_field_display
+            else:
+                field_label = ft_val or None
+
+            # Header: raw value · country, then field type on its own line.
             header_parts = [f"**{raw_val}**"]
             if country:
                 header_parts.append(f"· {country}")
-            if ft_val:
-                header_parts.append(f"· {ft_val}")
             st.markdown(" ".join(header_parts))
+            if field_label:
+                st.caption(f"Field type: {field_label}")
 
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -307,11 +323,13 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
                 try:
                     sp = fields.get(fk)
                     country_dep = sp.country_dependent
+                    display = sp.display_name
                 except Exception:
                     country_dep = False
+                    display = fk
                 pending_saves.append({
                     "field_key": fk,
-                    "display": sp.display_name if fk else fk,
+                    "display": display,
                     "raw": raw,
                     "country": country_val if country_dep else "",
                     "std_val": new_val,
@@ -351,19 +369,22 @@ def _render_pending_lookup_saves(rr: dict) -> None:
         if st.button("Save selected to lookup", key="pending_save_btn", type="primary"):
             to_save = [item for i, item in enumerate(pending) if save_flags.get(i)]
             total_added = 0
-            for item in to_save:
-                total_added += _ml.merge_api_results(
-                    item["field_key"],
-                    {(item["country"], item["raw"]): item["std_val"]},
-                    item["country_dependent"],
-                )
-            reload_lookup()
-            rr["pending_lookup_saves"] = None
-            st.session_state["run_result"] = rr
-            if total_added:
-                st.success(f"Saved {total_added} new entry(s) to the lookup. Active immediately.")
-            else:
-                st.info("All selected entries were already in the lookup — nothing new added.")
+            try:
+                for item in to_save:
+                    total_added += _ml.merge_api_results(
+                        item["field_key"],
+                        {(item["country"], item["raw"]): item["std_val"]},
+                        item["country_dependent"],
+                    )
+                reload_lookup()
+                rr["pending_lookup_saves"] = None
+                st.session_state["run_result"] = rr
+                if total_added:
+                    st.success(f"Saved {total_added} new entry(s) to the lookup. Active immediately.")
+                else:
+                    st.info("All selected entries were already in the lookup — nothing new added.")
+            except Exception as exc:
+                st.error(f"Failed to save: {exc}")
 
 
 def _render_manual_lookup_add(field_summaries: list[dict]) -> None:
@@ -404,19 +425,25 @@ def _render_manual_lookup_add(field_summaries: list[dict]) -> None:
             if not raw_input.strip():
                 st.warning("Enter a raw value.")
             else:
-                from standardize_file import _norm_key
-                norm_raw = _norm_key(raw_input.strip())
-                norm_country = _norm_key(country_input.strip()) if country_input else ""
-                added = _ml.merge_api_results(
-                    selected_fk,
-                    {(norm_country, norm_raw): std_val},
-                    spec_ml.country_dependent,
-                )
-                reload_lookup()
-                if added:
-                    st.success(f"Added: {raw_input.strip()!r} → {std_val!r}. Active immediately.")
-                else:
-                    st.info(f"{raw_input.strip()!r} is already in the lookup — no change.")
+                try:
+                    from standardize_file import _norm_key
+                    norm_raw = _norm_key(raw_input.strip())
+                    norm_country = _norm_key(country_input.strip()) if country_input else ""
+                    added = _ml.merge_api_results(
+                        selected_fk,
+                        {(norm_country, norm_raw): std_val},
+                        spec_ml.country_dependent,
+                    )
+                    reload_lookup()
+                    if added:
+                        st.success(f"Added: {raw_input.strip()!r} → {std_val!r}. Active immediately.")
+                    else:
+                        st.warning(
+                            f"{raw_input.strip()!r} already exists in the lookup for this field. "
+                            "To override an existing mapping, edit the lookup file directly."
+                        )
+                except Exception as exc:
+                    st.error(f"Failed to save: {exc}")
 
 
 def _render_submit_corrections(
@@ -495,9 +522,10 @@ def _render_submit_corrections(
                 key = (c, r)
                 if key not in orig_map:
                     orig_map[key] = _norm_val(row.get(STANDARDIZED_COLUMN))
+            if raw_col not in corrected_df.columns:
+                st.error(f"Uploaded file is missing the '{raw_col}' column.")
+                return
             for _, row in corrected_df.iterrows():
-                if raw_col not in corrected_df.columns:
-                    break
                 c = _norm_val(row.get(country_col)) if (country_col and country_col in corrected_df.columns) else ""
                 r = _norm_val(row.get(raw_col))
                 if not r:
@@ -659,7 +687,35 @@ is_multi_standard = False
 if uploaded is not None:
     suffix = Path(uploaded.name).suffix.lower()
     if suffix in (".xlsx", ".xls"):
-        df_preview = pd.read_excel(uploaded)
+        sheets = pd.read_excel(uploaded, sheet_name=None)
+        if len(sheets) > 1:
+            from analytics_format import resolve_standard_field
+            parts = []
+            matched_sheets = []
+            unmatched_sheets = []
+            for sheet_name, sheet_df in sheets.items():
+                if sheet_df.empty:
+                    continue
+                # Inject a Field column from the sheet name so each group routes
+                # to the correct classifier automatically.
+                sheet_df = sheet_df.copy()
+                sheet_df["Field"] = sheet_name
+                fk = resolve_standard_field(sheet_name)
+                if fk is not None:
+                    matched_sheets.append(sheet_name)
+                else:
+                    unmatched_sheets.append(sheet_name)
+                parts.append(sheet_df)
+            df_preview = pd.concat(parts, ignore_index=True) if parts else next(iter(sheets.values()))
+            msg = (
+                f"**{len(sheets)} sheet(s) detected** — combined into {len(df_preview)} rows. "
+                f"{len(matched_sheets)} sheet(s) matched a classifier: {', '.join(matched_sheets)}."
+            )
+            if unmatched_sheets:
+                msg += f" {len(unmatched_sheets)} sheet(s) have no classifier and will be skipped: {', '.join(unmatched_sheets)}."
+            st.info(msg)
+        else:
+            df_preview = next(iter(sheets.values()))
     else:
         df_preview = pd.read_csv(uploaded)
 
@@ -697,8 +753,8 @@ if uploaded is not None:
 
     elif is_multi_standard:
         # Standard file with a mixed Field column — auto-route each group.
-        field_col = next(c for c in df_preview.columns if str(c).strip().lower() == "field")
-        from analytics_format import resolve_standard_field
+        from analytics_format import find_field_col, resolve_standard_field
+        field_col = find_field_col(df_preview)
         rows = []
         for ft, group in df_preview.groupby(field_col, dropna=False):
             fk = resolve_standard_field(str(ft))
@@ -829,7 +885,8 @@ elif run_clicked and uploaded is not None and is_multi_standard:
         )
 
     progress = st.progress(0, text="Classifying each field type…")
-    field_col = next(c for c in df_preview.columns if str(c).strip().lower() == "field")
+    from analytics_format import find_field_col as _find_field_col
+    field_col = _find_field_col(df_preview)
     try:
         value_col = detect_value_column(df_preview)
     except ValueError as exc:
@@ -998,9 +1055,8 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
     default_keep = [raw_col]
     if country_col:
         default_keep.insert(0, country_col)
-    field_col_match = next(
-        (c for c in original_cols if str(c).strip().lower() == "field"), None
-    )
+    from analytics_format import find_field_col as _ffc
+    field_col_match = _ffc(pd.DataFrame(columns=original_cols))
     if field_col_match and field_col_match not in default_keep:
         default_keep.append(field_col_match)
 

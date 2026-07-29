@@ -36,6 +36,8 @@
       "Associations": "Non-Profit / Cooperative",
       "Unknown": "Other / Unclassified",
       "Other Unincorporated Entity": "Other / Unclassified",
+      "Non-Limited": "Other / Unclassified",
+      "non-limited": "Other / Unclassified",
       "APTY": "Company",
       "non registered entity (nret)": "Other / Unclassified",
       "other incorported entity": "Other / Unclassified",
@@ -1329,6 +1331,8 @@
   "positions_designations": {
     "consistent": {
       "Vice President": "Executive Management",
+      "Officer": "Executive Management",
+      "officer": "Executive Management",
       "administration manager": "Other / Unclassified",
       "assistant manager": "Other / Unclassified",
       "assistant secretary": "Executive Management",
@@ -3022,7 +3026,8 @@
       "vp, director, president, vice president, vice-president": "Executive Management",
       "vp, vice president": "Executive Management",
       "Chief Executive Officer,Director-General": "Director",
-      "Chief Executive Officer,President": "Board Member"
+      "Chief Executive Officer,President": "Board Member",
+      "Officer": "Executive Management"
     },
     "by_country": {
       "Turkey": {
@@ -3050,14 +3055,12 @@
       "Peru": {
         "President": "Board Member",
         "Director": "Director",
-        "Officer": "Other / Unclassified",
         "Manager": "Other / Unclassified",
         "Secretary": "Executive Management"
       },
       "Indonesia": {
         "President": "Board Member",
         "Director": "Director",
-        "Officer": "Other / Unclassified",
         "Manager": "Other / Unclassified",
         "Secretary": "Executive Management",
         "Member": "Board Member",
@@ -3359,9 +3362,6 @@
         "Administrator": "Board Member",
         "Principal": "Executive Management",
         "Commissioner": "Board Member"
-      },
-      "Norway": {
-        "Officer": "Other / Unclassified"
       },
       "Sweden": {
         "managing director": "Executive Management",

@@ -23,6 +23,11 @@ Liquidator: Maps to Authorized Representative under the new taxonomy (previously
 Governor: Map to Director for Corporations; map to Owner / Controller for LLCs/LLPs.  
 Unknowns: If an entry is unclear, incomplete, blank, or nonsensical, map to Other / Unclassified.  
 Formatting: Return all outputs in Title Case exactly as the canonical values appear above (e.g., Owner / Controller, not owner/controller).  
+Confidence Guidance  
+Use HIGH when the title unambiguously matches one canonical value — including any title explicitly listed in the canonical definitions above or in the Europe Board Member Rules table. The vast majority of inputs should be HIGH.  
+Use MEDIUM only when the title is genuinely ambiguous between two categories and a reasonable argument can be made for either (e.g., a dual-role title that could be Board Member or Director depending on context not present in the input).  
+Use LOW only when the input is so unclear or multi-valued that the classification is meaningfully uncertain and a human should verify it.  
+Default bias: when in doubt between two adjacent categories, classify at the higher rank (e.g., prefer Director over Executive Management if the title could plausibly be either) and use MEDIUM rather than LOW.  
 Output Format  
 Country context: Some inputs include a jurisdiction prefix such as [Country: Israel] Director. This prefix is provided as classification context only. Do not include the prefix, brackets, bold markers, or any other formatting in your output. Return only the exact canonical value name (e.g., Director — not [Country: Israel] Director or **[Country: Israel] Director**).  
 Before processing, count the total number of input entries.  

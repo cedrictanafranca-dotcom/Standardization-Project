@@ -141,6 +141,12 @@ _OUTPUT_WITH_MEDIUM = re.compile(
     r"^\s*(\d+)[.)]\s*(.+?)\s*\|\s*MEDIUM\s*\|\s*Reason:\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+# HIGH with extra trailing content the model sometimes appends (e.g. "| Reason: ...").
+# Strip the extra and treat as plain HIGH — the value itself is still valid.
+_OUTPUT_WITH_HIGH_EXTRA = re.compile(
+    r"^\s*(\d+)[.)]\s*(.+?)\s*\|\s*HIGH\s*\|.+$",
+    re.IGNORECASE,
+)
 _TOTAL_LINE = re.compile(r"\[\s*Total:\s*(\d+)\s+of\s+(\d+)\s+mapped\s*\]", re.IGNORECASE)
 
 
@@ -192,6 +198,17 @@ def parse_response(text: str, raw_values: list[str]) -> BatchResult:
                 warnings.append(f"duplicate output for item {idx}")
             else:
                 parsed[idx] = (value, "MEDIUM", [], reasoning)
+            continue
+
+        # HIGH with extra trailing content — strip and treat as plain HIGH.
+        m = _OUTPUT_WITH_HIGH_EXTRA.match(line)
+        if m:
+            idx = int(m.group(1))
+            value = m.group(2).strip()
+            if idx in parsed:
+                warnings.append(f"duplicate output for item {idx}")
+            else:
+                parsed[idx] = (value, "HIGH", [], "")
             continue
 
         # Plain confidence (HIGH, or degraded LOW/MEDIUM without extras).

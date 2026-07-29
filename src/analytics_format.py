@@ -64,6 +64,28 @@ STANDARD_FIELD_MAP: dict[str, str] = {
     "ownership_relationship_type": "ownership_relationship_type",
     "directors_officers_status": "directors_officers_status",
     "ownership_relationship_status": "ownership_relationship_status",
+    # Sheet / tab name patterns from GG test and export files
+    "standardizedincorporationdetail": "business_legal_form",
+    "standardized incorporation detail": "business_legal_form",
+    "incorporation detail": "business_legal_form",
+    "universal position + designatio": "positions_designations",
+    "universal position + designation": "positions_designations",
+    "universal position": "positions_designations",
+    "status - business entity": "business_status",
+    "status - directorsofficers": "directors_officers_status",
+    "status - directors officers": "directors_officers_status",
+    "status - directors/officers": "directors_officers_status",
+    "status - ownershiprelationship": "ownership_relationship_status",
+    "status - ownership relationship": "ownership_relationship_status",
+    "universalbeneficiarytype": "psc_beneficiary_type",
+    "universal beneficiary type": "psc_beneficiary_type",
+    "type - directorsofficers": "directors_officers_type",
+    "type - directors officers": "directors_officers_type",
+    "type - directors/officers": "directors_officers_type",
+    "type - ownership relationship t": "ownership_relationship_type",
+    "type - ownership relationship type": "ownership_relationship_type",
+    "businessentitytype": "business_entity_type",
+    "brn": "brn_type",
 }
 
 # fieldType string (lowercased) → field registry key.
@@ -88,6 +110,22 @@ FIELD_TYPE_MAP: dict[str, str] = {
 
 # Synthetic column name added during processing (not in original data).
 RESOLVED_COUNTRY_COLUMN = "Country"
+
+# Canonical output-facing field type name per field registry key.
+# "Standardized X" names in source data are legacy aliases; the output always
+# uses the current "Universal X" platform naming convention.
+_CANONICAL_FIELD_TYPE_NAME: dict[str, str] = {
+    "positions_designations": "Universal Position",
+    "business_legal_form": "Universal Business Legal Form",
+    "business_status": "Universal Business Status",
+    "psc_beneficiary_type": "Universal Beneficiary Type",
+    "brn_type": "BRN Type",
+    "directors_officers_type": "Directors Officers Type",
+    "business_entity_type": "Business Entity Type",
+    "ownership_relationship_type": "Ownership Relationship Type",
+    "directors_officers_status": "Directors Officers Status",
+    "ownership_relationship_status": "Ownership Relationship Status",
+}
 
 
 def is_analytics_format(df: pd.DataFrame) -> bool:
@@ -234,9 +272,11 @@ def process_analytics_df(
         )
 
         # Write results back into the correct rows of the full DataFrame.
-        result.loc[group_idx, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN].values
-        result.loc[group_idx, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN].values
-        result.loc[group_idx, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN].values
+        # Use sub_result.index (the original row positions) rather than .values so
+        # row order changes inside standardize_dataframe never cause misalignment.
+        result.loc[sub_result.index, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN]
+        result.loc[sub_result.index, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN]
+        result.loc[sub_result.index, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN]
 
         field_summaries.append({
             "field_type": ft,
@@ -246,6 +286,14 @@ def process_analytics_df(
             "known": True,
             "stats": stats,
         })
+
+    # Normalize legacy "Standardized X" field type names to "Universal X"
+    # in the output column so the file reflects the current platform naming.
+    def _normalize_ft(v):
+        fk = resolve_field_type(str(v))
+        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
+
+    result[ft_col] = result[ft_col].apply(_normalize_ft)
 
     analytics_stats = AnalyticsStats(
         total_rows=len(df),
@@ -264,16 +312,22 @@ def resolve_standard_field(field_val: str) -> str | None:
     return STANDARD_FIELD_MAP.get(str(field_val).strip().lower())
 
 
-def is_multi_field_standard(df: pd.DataFrame) -> bool:
-    """Return True if df has a 'Field' column containing at least one known field type.
+_FIELD_COL_NAMES = {"field", "field type", "fieldtype", "field_type"}
 
-    This catches standard-format files (Country / Value / Field / ...) where
-    the Field column mixes types like 'Designation', 'Position',
-    'Business Legal Form', etc. — each group needs a different classifier.
-    """
-    field_col = next(
-        (c for c in df.columns if str(c).strip().lower() == "field"), None
+
+def find_field_col(df: pd.DataFrame) -> str | None:
+    """Return the field-type column name, accepting several common header variants."""
+    return next(
+        (c for c in df.columns if str(c).strip().lower() in _FIELD_COL_NAMES), None
     )
+
+
+def is_multi_field_standard(df: pd.DataFrame) -> bool:
+    """Return True if df has a field-type column containing at least one known field type.
+
+    Accepts column names: 'Field', 'Field Type', 'fieldType', 'field_type'.
+    """
+    field_col = find_field_col(df)
     if field_col is None:
         return False
     return any(
@@ -296,7 +350,7 @@ def process_standard_multi_field_df(
     field spec, and recombines in original row order — identical logic to
     process_analytics_df but without the countryId resolution step.
     """
-    field_col = next(c for c in df.columns if str(c).strip().lower() == "field")
+    field_col = find_field_col(df)
 
     # Drop rows below the minimum count threshold.
     if min_count > 0:
@@ -364,9 +418,9 @@ def process_standard_multi_field_df(
             canonical_values=spec.standard_values,
         )
 
-        result.loc[group_idx, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN].values
-        result.loc[group_idx, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN].values
-        result.loc[group_idx, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN].values
+        result.loc[sub_result.index, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN]
+        result.loc[sub_result.index, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN]
+        result.loc[sub_result.index, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN]
 
         field_summaries.append({
             "field_type": ft,
@@ -376,6 +430,13 @@ def process_standard_multi_field_df(
             "known": True,
             "stats": stats,
         })
+
+    # Normalize legacy "Standardized X" field type names to "Universal X".
+    def _normalize_sf(v):
+        fk = resolve_standard_field(str(v))
+        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
+
+    result[field_col] = result[field_col].apply(_normalize_sf)
 
     return result, AnalyticsStats(
         total_rows=len(df),

@@ -9,6 +9,8 @@ analytics export CSVs into human-readable country names before classification.
 
 from __future__ import annotations
 
+import math
+
 _ID_TO_NAME: dict[int, str] = {
     -1: "Global",
     0: "Unknown",
@@ -272,6 +274,8 @@ def resolve_country_id(country_id) -> str:
     Returns 'Unknown (ID: X)' for IDs not in the table.
     """
     try:
+        if isinstance(country_id, float) and math.isnan(country_id):
+            return "Unknown"
         cid = int(float(country_id))
     except (TypeError, ValueError):
         return str(country_id) if country_id is not None else "Unknown"

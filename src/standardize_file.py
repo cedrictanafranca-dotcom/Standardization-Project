@@ -145,6 +145,23 @@ def _norm_key(value) -> str:
 # values and should be caught before the model sees them.
 _SYSTEM_ARTIFACT_RE = re.compile(r'^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$')
 
+# Known placeholder / no-data strings that are definitively Other / Unclassified
+# and should never be sent to the API.
+_DATA_QUALITY_PLACEHOLDERS = frozenset({
+    "n/a", "na", "n.a.", "n/a.", "null", "none", "unknown", "not available",
+    "not applicable", "not specified", "not provided", "not found",
+    "-", ".", "/", "?", "—", "--", "...",
+    "legal form unknown", "legal form not available", "legal form not specified",
+    "information not available", "data not available",
+})
+
+
+def _is_data_quality_placeholder(raw: str) -> bool:
+    """Return True if raw is a known placeholder / no-data value."""
+    if len(raw) <= 1:
+        return True
+    return raw.lower() in _DATA_QUALITY_PLACEHOLDERS
+
 
 def detect_value_column(df: pd.DataFrame, user_specified: str | None = None) -> str:
     """Return the raw-value column: user's choice if given, else auto-detect."""
@@ -284,6 +301,19 @@ def standardize_dataframe(
         else:
             filtered_to_classify.append(k)
     to_classify = filtered_to_classify
+
+    # Pre-classify data quality placeholders (N/A, null, single chars, etc.)
+    # — definitively Other / Unclassified, no API call needed.
+    filtered_to_classify2: list[tuple[str, str]] = []
+    for k in to_classify:
+        _, raw = k
+        if _is_data_quality_placeholder(raw):
+            mapping[k] = (
+                blank_fill, "HIGH", [], "",
+            )
+        else:
+            filtered_to_classify2.append(k)
+    to_classify = filtered_to_classify2
 
     # 4.1 chunking: never send the whole file as one call.
     warnings: list[str] = []
