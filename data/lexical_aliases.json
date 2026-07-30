@@ -1,0 +1,408 @@
+{
+  "schema_version": 1,
+  "description": "Reviewed exact lexical aliases and meaning-change safeguards. Entries are conservative and grounded in the field prompts.",
+  "country_aliases": {
+    "UK": "United Kingdom",
+    "GB": "United Kingdom",
+    "United Kingdom": "United Kingdom",
+    "GI": "Gibraltar",
+    "Gibraltar": "Gibraltar",
+    "IE": "Ireland",
+    "Ireland": "Ireland",
+    "MT": "Malta",
+    "Malta": "Malta"
+  },
+  "fields": {
+    "positions_designations": {
+      "canonical_values": [
+        "Board Member",
+        "Director",
+        "Executive Management",
+        "Owner / Controller",
+        "Authorized Representative",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [
+        {
+          "phrase": "former",
+          "warning": "Former indicates a past role and must not inherit a current-role alias."
+        },
+        {
+          "phrase": "resigned",
+          "warning": "Resigned indicates the role has ended and changes the meaning of the title."
+        },
+        {
+          "phrase": "acting",
+          "warning": "Acting may indicate temporary authority and requires contextual classification."
+        },
+        {
+          "phrase": "assistant",
+          "warning": "Assistant is a subordinate role and must not inherit the unmodified title."
+        },
+        {
+          "phrase": "deputy",
+          "warning": "Deputy is a distinct subordinate or alternate role."
+        },
+        {
+          "phrase": "interim",
+          "warning": "Interim indicates a temporary appointment and requires contextual classification."
+        },
+        {
+          "phrase": "non-executive",
+          "warning": "Non-executive changes a director title to an explicit board-level role."
+        }
+      ],
+      "aliases": [
+        {
+          "alias": "CEO",
+          "kind": "abbreviation",
+          "expansion": "Chief Executive Officer",
+          "canonical_value": "Executive Management",
+          "note": "General rule outside UK, Gibraltar, Ireland, and Malta."
+        },
+        {
+          "alias": "CEO",
+          "kind": "abbreviation",
+          "expansion": "Chief Executive Officer",
+          "canonical_value": "Board Member",
+          "countries": ["United Kingdom", "Gibraltar", "Ireland", "Malta"],
+          "note": "Country override from the positions prompt."
+        },
+        {
+          "alias": "Chief Executive Officer",
+          "canonical_value": "Executive Management",
+          "note": "General rule outside UK, Gibraltar, Ireland, and Malta."
+        },
+        {
+          "alias": "Chief Executive Officer",
+          "canonical_value": "Board Member",
+          "countries": ["United Kingdom", "Gibraltar", "Ireland", "Malta"],
+          "note": "Country override from the positions prompt."
+        },
+        {
+          "alias": "MD",
+          "kind": "abbreviation",
+          "expansion": "Managing Director",
+          "canonical_value": "Executive Management",
+          "note": "General rule outside UK, Gibraltar, Ireland, and Malta."
+        },
+        {
+          "alias": "MD",
+          "kind": "abbreviation",
+          "expansion": "Managing Director",
+          "canonical_value": "Board Member",
+          "countries": ["United Kingdom", "Gibraltar", "Ireland", "Malta"],
+          "note": "Country override from the positions prompt."
+        },
+        {
+          "alias": "Managing Director",
+          "canonical_value": "Executive Management",
+          "note": "General rule outside UK, Gibraltar, Ireland, and Malta."
+        },
+        {
+          "alias": "Managing Director",
+          "canonical_value": "Board Member",
+          "countries": ["United Kingdom", "Gibraltar", "Ireland", "Malta"],
+          "note": "Country override from the positions prompt."
+        },
+        {
+          "alias": "CFO",
+          "kind": "abbreviation",
+          "expansion": "Chief Financial Officer",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "COO",
+          "kind": "abbreviation",
+          "expansion": "Chief Operating Officer",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "CTO",
+          "kind": "abbreviation",
+          "expansion": "Chief Technology Officer",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "VP",
+          "kind": "abbreviation",
+          "expansion": "Vice President",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "SVP",
+          "kind": "abbreviation",
+          "expansion": "Senior Vice President",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "EVP",
+          "kind": "abbreviation",
+          "expansion": "Executive Vice President",
+          "canonical_value": "Executive Management"
+        },
+        {
+          "alias": "NED",
+          "kind": "abbreviation",
+          "expansion": "Non-Executive Director",
+          "canonical_value": "Board Member"
+        },
+        {
+          "alias": "Non-Executive Director",
+          "canonical_value": "Board Member",
+          "covers_modifiers": ["non-executive"],
+          "note": "The complete phrase is explicitly approved as a board role."
+        },
+        {
+          "alias": "Director",
+          "canonical_value": "Director"
+        },
+        {
+          "alias": "Board Member",
+          "canonical_value": "Board Member"
+        },
+        {
+          "alias": "UBO",
+          "kind": "abbreviation",
+          "expansion": "Ultimate Beneficial Owner",
+          "canonical_value": "Owner / Controller"
+        },
+        {
+          "alias": "POA",
+          "kind": "abbreviation",
+          "expansion": "Power of Attorney",
+          "canonical_value": "Authorized Representative"
+        }
+      ]
+    },
+    "business_legal_form": {
+      "canonical_values": [
+        "Sole Proprietorship / Individual Business",
+        "Partnership",
+        "Company",
+        "Non-Profit / Cooperative",
+        "Trust / Fund / Scheme",
+        "Foreign Entity / Branch",
+        "Government / Public Sector Entity",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [
+        {
+          "phrase": "branch",
+          "warning": "Branch changes an incorporated-form alias to Foreign Entity / Branch."
+        },
+        {
+          "phrase": "foreign",
+          "warning": "Foreign changes the jurisdictional meaning of a legal-form alias."
+        },
+        {
+          "phrase": "non-profit",
+          "warning": "Non-profit changes an ordinary company or association alias to a nonprofit form."
+        },
+        {
+          "phrase": "nonprofit",
+          "warning": "Nonprofit changes an ordinary company or association alias to a nonprofit form."
+        }
+      ],
+      "aliases": [
+        {
+          "alias": "Company",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "LLC",
+          "kind": "abbreviation",
+          "expansion": "Limited Liability Company",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "Ltd",
+          "kind": "abbreviation",
+          "expansion": "Limited",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "PLC",
+          "kind": "abbreviation",
+          "expansion": "Public Limited Company",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "GmbH",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "Inc",
+          "kind": "abbreviation",
+          "expansion": "Incorporated",
+          "canonical_value": "Company"
+        },
+        {
+          "alias": "LLP",
+          "kind": "abbreviation",
+          "expansion": "Limited Liability Partnership",
+          "canonical_value": "Partnership"
+        },
+        {
+          "alias": "LP",
+          "kind": "abbreviation",
+          "expansion": "Limited Partnership",
+          "canonical_value": "Partnership"
+        },
+        {
+          "alias": "Sole Trader",
+          "canonical_value": "Sole Proprietorship / Individual Business"
+        },
+        {
+          "alias": "NPO",
+          "kind": "abbreviation",
+          "expansion": "Non-Profit Organization",
+          "canonical_value": "Non-Profit / Cooperative"
+        },
+        {
+          "alias": "Non-Profit",
+          "canonical_value": "Non-Profit / Cooperative",
+          "covers_modifiers": ["non-profit"]
+        },
+        {
+          "alias": "Nonprofit",
+          "canonical_value": "Non-Profit / Cooperative",
+          "covers_modifiers": ["nonprofit"]
+        },
+        {
+          "alias": "Branch",
+          "canonical_value": "Foreign Entity / Branch",
+          "covers_modifiers": ["branch"]
+        },
+        {
+          "alias": "Foreign Company",
+          "canonical_value": "Foreign Entity / Branch",
+          "covers_modifiers": ["foreign"]
+        }
+      ]
+    },
+    "business_status": {
+      "canonical_values": [
+        "Active",
+        "Inactive",
+        "Pending / Insolvency",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Good Standing", "canonical_value": "Active"},
+        {"alias": "Live", "canonical_value": "Active"},
+        {"alias": "Dissolved", "canonical_value": "Inactive"},
+        {"alias": "In Administration", "canonical_value": "Pending / Insolvency"}
+      ]
+    },
+    "psc_beneficiary_type": {
+      "canonical_values": [
+        "Root Business",
+        "Owner / Beneficial Owner",
+        "Controller",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [],
+      "aliases": [
+        {
+          "alias": "UBO",
+          "kind": "abbreviation",
+          "expansion": "Ultimate Beneficial Owner",
+          "canonical_value": "Owner / Beneficial Owner"
+        },
+        {"alias": "Beneficial Owner", "canonical_value": "Owner / Beneficial Owner"},
+        {"alias": "Root Entity", "canonical_value": "Root Business"},
+        {"alias": "Authorized Signatory", "canonical_value": "Controller"}
+      ]
+    },
+    "brn_type": {
+      "canonical_values": [
+        "Business Registration Number",
+        "Tax ID Number",
+        "VAT Number",
+        "LEI",
+        "Charity Number",
+        "Proprietary / Third-party ID",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [],
+      "aliases": [
+        {
+          "alias": "BRN",
+          "kind": "abbreviation",
+          "expansion": "Business Registration Number",
+          "canonical_value": "Business Registration Number"
+        },
+        {
+          "alias": "TIN",
+          "kind": "abbreviation",
+          "expansion": "Tax Identification Number",
+          "canonical_value": "Tax ID Number"
+        },
+        {
+          "alias": "VAT",
+          "kind": "abbreviation",
+          "expansion": "Value Added Tax",
+          "canonical_value": "VAT Number"
+        },
+        {
+          "alias": "LEI",
+          "kind": "abbreviation",
+          "expansion": "Legal Entity Identifier",
+          "canonical_value": "LEI"
+        }
+      ]
+    },
+    "directors_officers_type": {
+      "canonical_values": ["Individual", "Business", "Other / Unclassified"],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Director", "canonical_value": "Individual"},
+        {"alias": "Secretary", "canonical_value": "Individual"},
+        {"alias": "Corporate-Director", "canonical_value": "Business"},
+        {"alias": "Corporate-Secretary", "canonical_value": "Business"}
+      ]
+    },
+    "business_entity_type": {
+      "canonical_values": ["Individual", "Business", "Other / Unclassified"],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Natural Person", "canonical_value": "Individual"},
+        {"alias": "Legal Entity", "canonical_value": "Business"}
+      ]
+    },
+    "ownership_relationship_type": {
+      "canonical_values": ["Individual", "Business", "Other / Unclassified"],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Individual Beneficial Owner", "canonical_value": "Individual"},
+        {"alias": "Corporate Entity Beneficial Owner", "canonical_value": "Business"}
+      ]
+    },
+    "directors_officers_status": {
+      "canonical_values": ["Active", "Resigned", "Other / Unclassified"],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Current", "canonical_value": "Active"},
+        {"alias": "Serving", "canonical_value": "Active"},
+        {"alias": "Former", "canonical_value": "Resigned"},
+        {"alias": "Resigned", "canonical_value": "Resigned"}
+      ]
+    },
+    "ownership_relationship_status": {
+      "canonical_values": [
+        "Active",
+        "Inactive",
+        "Pending / Insolvency",
+        "Other / Unclassified"
+      ],
+      "modifier_rules": [],
+      "aliases": [
+        {"alias": "Current", "canonical_value": "Active"},
+        {"alias": "Dissolved", "canonical_value": "Inactive"},
+        {"alias": "Pending", "canonical_value": "Pending / Insolvency"}
+      ]
+    }
+  }
+}
