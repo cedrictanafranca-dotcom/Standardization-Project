@@ -93,7 +93,11 @@ class IntegratedRoutingTests(unittest.TestCase):
         sf._MASTER_LOOKUP = {
             "positions_designations": FieldLookup("positions_designations")
         }
-        result, stats = self._run("C.E.O.", ScriptedClient())
+        result, stats = self._run(
+            "C.E.O.",
+            ScriptedClient(),
+            automation_policy=None,
+        )
         self.assertEqual(
             result.loc[0, sf.STANDARDIZED_COLUMN], "Executive Management"
         )

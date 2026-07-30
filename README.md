@@ -17,6 +17,8 @@ may resolve automatically; modifier cases and conflicting evidence are forced
 to review; semantic retrieval supplies evidence only. No external embedding
 provider is selected or enabled. See `docs/integrated_predictive_pipeline.md`
 for routing, safeguards, offline test commands, and remaining decisions.
+The current 92%-target deterministic calibration and prioritized ambiguity
+review are summarized in `docs/automation_calibration_report.md`.
 
 The isolated accuracy-first semantic evidence retriever and its provider,
 hosting, caching, and integration guidance are documented in

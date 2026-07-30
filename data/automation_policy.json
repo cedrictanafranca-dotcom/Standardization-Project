@@ -1,0 +1,43 @@
+{
+  "alias_rules": {
+    "brn_type": {"enabled": false, "observed_count": 1, "observed_precision": 1.0, "reason": "Insufficient held-out volume; aliases remain classifier evidence."},
+    "business_entity_type": {"enabled": false, "observed_count": 0, "observed_precision": 0.0, "reason": "No held-out alias evidence."},
+    "business_legal_form": {"enabled": true, "observed_count": 3, "observed_precision": 1.0, "reason": "Fixed approved-alias route met the 92% target on the held-out set."},
+    "business_status": {"enabled": false, "observed_count": 1, "observed_precision": 1.0, "reason": "Insufficient held-out volume; aliases remain classifier evidence."},
+    "directors_officers_status": {"enabled": false, "observed_count": 1, "observed_precision": 1.0, "reason": "Insufficient held-out volume; aliases remain classifier evidence."},
+    "directors_officers_type": {"enabled": false, "observed_count": 2, "observed_precision": 1.0, "reason": "Insufficient held-out volume; aliases remain classifier evidence."},
+    "ownership_relationship_status": {"enabled": false, "observed_count": 0, "observed_precision": 0.0, "reason": "No held-out alias evidence."},
+    "ownership_relationship_type": {"enabled": false, "observed_count": 0, "observed_precision": 0.0, "reason": "No held-out alias evidence."},
+    "positions_designations": {"enabled": false, "observed_count": 56, "observed_precision": 0.875, "reason": "Observed precision was below the 92% target; aliases remain classifier evidence."},
+    "psc_beneficiary_type": {"enabled": false, "observed_count": 0, "observed_precision": 0.0, "reason": "No held-out alias evidence."}
+  },
+  "schema_version": 1,
+  "similarity_rules": {
+    "brn_type": {
+      "calibration_count": 74,
+      "calibration_coverage": 0.6324786324786325,
+      "calibration_precision": 0.9864864864864865,
+      "enabled": true,
+      "min_agreement": 0.67,
+      "min_margin": 0.0,
+      "min_score": 0.55,
+      "min_support": 1,
+      "reason": "Calibration-selected threshold met the target on the family-disjoint validation partition.",
+      "validation_count": 25,
+      "validation_coverage": 0.7575757575757576,
+      "validation_precision": 1.0
+    },
+    "business_entity_type": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "business_legal_form": {"calibration_count": 65, "calibration_coverage": 0.45774647887323944, "calibration_precision": 0.9230769230769231, "enabled": false, "min_agreement": 0.67, "min_margin": 0.06, "min_score": 0.67, "min_support": 1, "reason": "Validation precision was 85.7%, below target.", "validation_count": 42, "validation_coverage": 0.44680851063829785, "validation_precision": 0.8571428571428571},
+    "business_status": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "directors_officers_status": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "directors_officers_type": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "ownership_relationship_status": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "ownership_relationship_type": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0},
+    "positions_designations": {"calibration_count": 44, "calibration_coverage": 0.20853080568720378, "calibration_precision": 0.9545454545454546, "enabled": false, "min_agreement": 0.67, "min_margin": 0.18, "min_score": 0.55, "min_support": 2, "reason": "Validation precision was 56.7%, below target.", "validation_count": 30, "validation_coverage": 0.19607843137254902, "validation_precision": 0.5666666666666667},
+    "psc_beneficiary_type": {"calibration_count": 0, "calibration_coverage": 0.0, "calibration_precision": 0.0, "enabled": false, "min_agreement": 1.0, "min_margin": 1.0, "min_score": 1.0, "min_support": 2, "reason": "Insufficient calibration evidence.", "validation_count": 0, "validation_coverage": 0.0, "validation_precision": 0.0}
+  },
+  "source_lookup_sha256": "4072c7a1798234d3f26f28911c9652d8a637c658f5ae1e7d60fbfe72a0aac935",
+  "split_seed": 20260730,
+  "target_precision": 0.92
+}

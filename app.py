@@ -1050,6 +1050,7 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
     )
     if (
         stats.alias_matches
+        or stats.alias_deferred
         or stats.alias_reviews
         or stats.similarity_predictions
         or stats.retrieval_assisted
@@ -1058,6 +1059,7 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
         st.info(
             f"Approved mappings also supported this run: "
             f"{stats.alias_matches} safe alias match(es); "
+            f"{stats.alias_deferred} alias match(es) sent to the classifier; "
             f"{stats.alias_reviews} modifier case(s) forced to review; "
             f"{stats.similarity_predictions} opt-in similar-value prediction(s); "
             f"{stats.retrieval_assisted} classifier value(s) received approved examples; "

@@ -72,14 +72,16 @@ output/                       — Standardized Excel output files written here
 ## Classification Pipeline
 
 **Integrated predictive extension (2026-07-30):** After exact lookup and local
-artifact filtering, explicitly approved field/country aliases may resolve
-automatically. Meaning-changing modifiers remain unresolved and are forced to
+artifact filtering, aliases and similarity matches resolve automatically only
+when enabled by the source-bound `data/automation_policy.json`. Meaning-changing modifiers remain unresolved and are forced to
 human review. Lexical and optional semantic retrieval supply a small set of
 approved evidence to Claude; semantic neighbors never classify automatically.
 Legacy near-identical automatic predictions are disabled by default until the
 golden evaluation validates an acceptance threshold. Strict canonical parsing
 and optional independent verification route invalid, conflicting, or
 disagreeing decisions to review. See `docs/integrated_predictive_pipeline.md`.
+The current offline policy targets 92% precision; see
+`docs/automation_calibration_report.md` for measured coverage and limitations.
 
 1. Load file → detect format (analytics / multi-tab / multi-field / single-field)
 2. **Pre-flight lookup** — check `data/master_lookup.json` first; known values get HIGH confidence with no API call

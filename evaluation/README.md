@@ -78,6 +78,27 @@ python -m evaluation.cli compare `
   --output output\evaluation\comparison.json
 ```
 
+## Calibrate deterministic automation
+
+After building the holdout, calibrate field-specific rules without API calls:
+
+```powershell
+python -m evaluation.cli calibrate `
+  --dataset output\evaluation\heldout.jsonl `
+  --reference output\evaluation\reference_lookup.json `
+  --manifest output\evaluation\manifest.json `
+  --target-precision 0.92 `
+  --split-seed 20260730 `
+  --policy-output output\evaluation\automation_policy.json `
+  --report-output output\evaluation\automation_report.json `
+  --ambiguity-output output\evaluation\ambiguity_report.json
+```
+
+Similarity thresholds are selected on one family-disjoint partition and
+enabled only if they independently meet the target on the other partition.
+The generated policy is also bound to the source lookup SHA-256. Copy a policy
+into `data/automation_policy.json` only after reviewing its report.
+
 ## Optional live API evaluation
 
 Do not run this without explicit cost approval. The runner has two gates and

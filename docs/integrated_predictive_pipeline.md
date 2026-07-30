@@ -20,9 +20,11 @@ Only these routes are automatic by default:
 
 - exact approved lookup matches;
 - deterministic data-quality filters; and
-- complete aliases explicitly approved in `data/lexical_aliases.json`.
+- aliases and similarity rules enabled by the source-bound measured policy in
+  `data/automation_policy.json`.
 
-Legacy near-identical similarity prediction is disabled by default. It can be
+Legacy near-identical similarity prediction remains available only as an
+explicit override. It can be
 enabled explicitly with `allow_similarity_predictions=True` or the CLI flag
 `--allow-similarity-predictions`, but should remain disabled until the golden
 evaluation demonstrates an acceptable incorrect-HIGH rate.
@@ -92,3 +94,6 @@ Use `evaluation/README.md` to compare prompt-only, alias-assisted,
 retrieval-assisted, and opt-in predictive approaches. Do not enable a live
 embedding provider or automatic similarity predictions based only on component
 tests; require measured improvement and an acceptable incorrect-HIGH rate.
+
+The current offline results and ambiguity priorities are documented in
+`docs/automation_calibration_report.md`.

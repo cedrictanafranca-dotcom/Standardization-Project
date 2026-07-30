@@ -51,6 +51,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
@@ -89,6 +90,11 @@ from semantic_retrieval import (
     approved_mappings_from_lookups,
 )
 from embedding_providers import DeterministicHashEmbeddingProvider
+from automation_policy import (
+    AutomationPolicy,
+    load_automation_policy,
+    summarize_similarity_matches,
+)
 
 # Load the master lookup once at module import time.  Returns an empty dict
 # gracefully if data/master_lookup.json doesn't exist yet — the pipeline
@@ -97,6 +103,23 @@ _MASTER_LOOKUP = load_lookup()
 _ALIAS_MATCHER = load_default_matcher()
 _EMBEDDING_PROVIDER: EmbeddingProvider | None = None
 _SEMANTIC_RETRIEVER: SemanticRetriever | None = None
+_AUTOMATION_POLICY_FILE = config.DATA_DIR / "automation_policy.json"
+_USE_CONFIGURED_POLICY = object()
+
+
+def _load_configured_automation_policy() -> AutomationPolicy | None:
+    if not _AUTOMATION_POLICY_FILE.exists():
+        return None
+    policy = load_automation_policy(_AUTOMATION_POLICY_FILE)
+    lookup_path = config.DATA_DIR / "master_lookup.json"
+    if lookup_path.exists() and policy.source_lookup_sha256:
+        actual_hash = hashlib.sha256(lookup_path.read_bytes()).hexdigest()
+        if actual_hash != policy.source_lookup_sha256:
+            return None
+    return policy
+
+
+_AUTOMATION_POLICY = _load_configured_automation_policy()
 
 
 def configure_embedding_provider(
@@ -123,8 +146,9 @@ def configure_embedding_provider(
 
 def reload_lookup() -> None:
     """Reload the in-process lookup cache from disk (call after updating master_lookup.json)."""
-    global _MASTER_LOOKUP
+    global _MASTER_LOOKUP, _AUTOMATION_POLICY
     _MASTER_LOOKUP = load_lookup()
+    _AUTOMATION_POLICY = _load_configured_automation_policy()
     if _EMBEDDING_PROVIDER is not None:
         configure_embedding_provider(_EMBEDDING_PROVIDER)
 
@@ -167,6 +191,7 @@ class Stats:
     lookup_hits: int = 0   # unique values resolved from the master lookup (no API call)
     alias_matches: int = 0  # approved aliases resolved safely without an API call
     alias_reviews: int = 0  # modifier/alias cases forced through classifier + review
+    alias_deferred: int = 0  # alias matches below policy evidence requirements
     similarity_predictions: int = 0  # conservative fuzzy predictions (no API call)
     retrieval_assisted: int = 0  # API values supplied with approved similar examples
     semantic_retrievals: int = 0  # API values supplied with hybrid semantic evidence
@@ -293,6 +318,7 @@ def standardize_dataframe(
     allow_similarity_predictions: bool = False,
     verification_policy: VerificationPolicy | None = None,
     verification_client=None,
+    automation_policy: AutomationPolicy | None | object = _USE_CONFIGURED_POLICY,
 ) -> tuple[pd.DataFrame, Stats]:
     """Add a standardized-value column next to `column`, everything else intact.
 
@@ -331,6 +357,7 @@ def standardize_dataframe(
     lookup_hits = 0
     alias_matches = 0
     alias_reviews = 0
+    alias_deferred = 0
     similarity_predictions = 0
     semantic_retrievals = 0
     retrieval_examples: dict[
@@ -341,6 +368,8 @@ def standardize_dataframe(
 
     if semantic_retriever is None:
         semantic_retriever = _SEMANTIC_RETRIEVER
+    if automation_policy is _USE_CONFIGURED_POLICY:
+        automation_policy = _AUTOMATION_POLICY
 
     if field_lookup is not None:
         for k in unique_nonblank:
@@ -393,14 +422,32 @@ def standardize_dataframe(
             country, raw = k
             alias_result = alias_matcher.match(field_key, raw, country)
             if alias_result.outcome is MatchOutcome.MATCH:
-                mapping[k] = (
-                    alias_result.canonical_value or blank_fill,
-                    "HIGH",
-                    [],
-                    "",
+                alias_is_automatic = (
+                    automation_policy is None
+                    or automation_policy.accepts_alias(field_key)
                 )
-                alias_matches += 1
-                continue
+                if alias_is_automatic:
+                    mapping[k] = (
+                        alias_result.canonical_value or blank_fill,
+                        "HIGH",
+                        [],
+                        "",
+                    )
+                    alias_matches += 1
+                    continue
+                alias_deferred += 1
+                rule = automation_policy.alias_rules.get(field_key)
+                evidence_notes.setdefault(k, []).append(
+                    rule.reason if rule else
+                    "No measured alias automation rule exists for this field."
+                )
+                for item in alias_result.evidence:
+                    if item.canonical_value:
+                        retrieval_examples.setdefault(k, []).append((
+                            item.matched_text,
+                            item.canonical_value,
+                            1.0,
+                        ))
             if alias_result.outcome is MatchOutcome.REVIEW:
                 alias_reviews += 1
                 forced_review.add(k)
@@ -423,16 +470,46 @@ def standardize_dataframe(
         still_unresolved: list[tuple[str, str]] = []
         for k in to_classify:
             country, raw = k
-            prediction = (
-                field_lookup.predict_similar(raw, country)
-                if allow_similarity_predictions
-                else None
+            calibrated_evidence = summarize_similarity_matches(
+                field_lookup.similar(
+                    raw,
+                    country,
+                    limit=8,
+                    min_score=0.0,
+                )
             )
-            if prediction is not None:
+            calibrated_accept = (
+                isinstance(automation_policy, AutomationPolicy)
+                and automation_policy.accepts_similarity(
+                    field_key or "",
+                    calibrated_evidence,
+                )
+            )
+            prediction = None
+            if not calibrated_accept and allow_similarity_predictions:
+                prediction = field_lookup.predict_similar(raw, country)
+
+            if calibrated_accept:
+                rule = automation_policy.similarity_rule(field_key or "")
+                reasoning = (
+                    "Automatically mapped by a validation-backed field policy: "
+                    f"score={calibrated_evidence.score:.0%}, "
+                    f"agreement={calibrated_evidence.agreement:.0%}, "
+                    f"margin={calibrated_evidence.margin:.0%}; "
+                    f"held-out precision={rule.validation_precision:.1%}."
+                )
+                mapping[k] = (
+                    calibrated_evidence.predicted_value,
+                    "HIGH",
+                    [],
+                    reasoning,
+                )
+                similarity_predictions += 1
+            elif prediction is not None:
                 example = prediction.matches[0]
                 confidence = "HIGH" if prediction.score == 1.0 else "MEDIUM"
                 reasoning = (
-                    f"Predicted from approved mapping {example.raw_value!r} "
+                    f"Opt-in legacy prediction from approved mapping {example.raw_value!r} "
                     f"({prediction.score:.0%} text similarity)."
                 )
                 mapping[k] = (
@@ -694,6 +771,7 @@ def standardize_dataframe(
         lookup_hits=lookup_hits,
         alias_matches=alias_matches,
         alias_reviews=alias_reviews,
+        alias_deferred=alias_deferred,
         similarity_predictions=similarity_predictions,
         retrieval_assisted=retrieval_assisted,
         semantic_retrievals=semantic_retrievals,
@@ -893,6 +971,7 @@ def main() -> int:
     print(f"  unique values         : {stats.unique_values}")
     print(f"  lookup hits           : {stats.lookup_hits}  (resolved from master table, no API call)")
     print(f"  approved aliases      : {stats.alias_matches}  (safe exact aliases, no API call)")
+    print(f"  aliases sent onward   : {stats.alias_deferred}  (below measured field evidence requirement)")
     print(f"  alias safety reviews  : {stats.alias_reviews}  (modifier cases sent onward and forced to review)")
     print(f"  similarity predictions: {stats.similarity_predictions}  (near-identical approved mappings)")
     print(f"  retrieval-assisted    : {stats.retrieval_assisted}  (classifier received approved examples)")

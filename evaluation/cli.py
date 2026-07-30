@@ -9,6 +9,7 @@ from pathlib import Path
 from .dataset import build_dataset, load_jsonl
 from .metrics import score_predictions
 from .models import Prediction
+from .automation import calibrate_automation
 
 
 def _load_predictions(path: Path) -> list[Prediction]:
@@ -19,12 +20,13 @@ def _load_predictions(path: Path) -> list[Prediction]:
     ]
 
 
-def _write_json(path: Path | None, value: dict | list) -> None:
+def _write_json(path: Path | None, value: dict | list, *, echo: bool = True) -> None:
     text = json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True)
     if path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text + "\n", encoding="utf-8")
-    print(text)
+    if echo:
+        print(text)
 
 
 def _build(args: argparse.Namespace) -> int:
@@ -69,6 +71,27 @@ def _compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _calibrate(args: argparse.Namespace) -> int:
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    policy, report, ambiguities = calibrate_automation(
+        load_jsonl(args.dataset),
+        args.reference,
+        source_lookup_sha256=str(manifest.get("source_sha256", "")),
+        target_precision=args.target_precision,
+        split_seed=args.split_seed,
+    )
+    _write_json(args.policy_output, policy.to_dict(), echo=False)
+    _write_json(args.report_output, report, echo=False)
+    _write_json(args.ambiguity_output, ambiguities, echo=False)
+    print(json.dumps({
+        "policy_output": str(args.policy_output),
+        "report_output": str(args.report_output),
+        "ambiguity_output": str(args.ambiguity_output),
+        "validation_policy": report["validation_policy"],
+    }, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(required=True)
@@ -92,6 +115,20 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("reports", nargs="+", type=Path)
     compare.add_argument("--output", type=Path)
     compare.set_defaults(handler=_compare)
+
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="calibrate deterministic automation thresholds without API calls",
+    )
+    calibrate.add_argument("--dataset", type=Path, required=True)
+    calibrate.add_argument("--reference", type=Path, required=True)
+    calibrate.add_argument("--manifest", type=Path, required=True)
+    calibrate.add_argument("--target-precision", type=float, default=0.92)
+    calibrate.add_argument("--split-seed", type=int, default=20260730)
+    calibrate.add_argument("--policy-output", type=Path, required=True)
+    calibrate.add_argument("--report-output", type=Path, required=True)
+    calibrate.add_argument("--ambiguity-output", type=Path, required=True)
+    calibrate.set_defaults(handler=_calibrate)
     return parser
 
 
