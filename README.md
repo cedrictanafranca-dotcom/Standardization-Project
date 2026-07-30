@@ -11,6 +11,10 @@ formats, exact and predictive lookup, retrieval-assisted Claude
 classification, review/correction workflows, and downloadable Excel results.
 See `CLAUDE.md` for the detailed architecture and current known issues.
 
+The isolated accuracy-first semantic evidence retriever and its provider,
+hosting, caching, and integration guidance are documented in
+[`docs/semantic_retrieval.md`](docs/semantic_retrieval.md).
+
 ## Layout
 
 ```
