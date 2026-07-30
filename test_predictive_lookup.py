@@ -117,6 +117,8 @@ def test_pipeline_counts_prediction_and_retrieval() -> None:
             "test prompt",
             MockClaudeClient("positions_designations"),
             field_key="positions_designations",
+            alias_matcher=None,
+            allow_similarity_predictions=True,
             canonical_values=[
                 "Board Member",
                 "Director",

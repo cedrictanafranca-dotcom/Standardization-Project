@@ -67,22 +67,66 @@ import pandas as pd
 import config
 import fields
 import run_log
-from classifier import CONFIDENCE_ADDENDUM, MockClaudeClient, RealClaudeClient, classify_values
+from classifier import (
+    CONFIDENCE_ADDENDUM,
+    DECISION_HUMAN_REVIEW,
+    DECISION_VERIFIED,
+    ClassificationRequest,
+    MockClaudeClient,
+    RealClaudeClient,
+    VerificationPolicy,
+    classify_request,
+    classify_values,
+)
 from fault_injection import FlakyClient, rate_limit_error, server_error
 from jira_ticket import build_ticket_text, find_countries
-from master_lookup import SimilarityMatch, load_lookup
+from master_lookup import load_lookup
 from retry import RetryExhaustedError, call_with_retry
+from lexical_aliases import LexicalAliasMatcher, MatchOutcome, load_default_matcher
+from semantic_retrieval import (
+    EmbeddingProvider,
+    SemanticRetriever,
+    approved_mappings_from_lookups,
+)
+from embedding_providers import DeterministicHashEmbeddingProvider
 
 # Load the master lookup once at module import time.  Returns an empty dict
 # gracefully if data/master_lookup.json doesn't exist yet — the pipeline
 # continues without it and sends everything to the API.
 _MASTER_LOOKUP = load_lookup()
+_ALIAS_MATCHER = load_default_matcher()
+_EMBEDDING_PROVIDER: EmbeddingProvider | None = None
+_SEMANTIC_RETRIEVER: SemanticRetriever | None = None
+
+
+def configure_embedding_provider(
+    provider: EmbeddingProvider | None,
+) -> SemanticRetriever | None:
+    """Configure semantic evidence retrieval without selecting a vendor here.
+
+    Passing ``None`` disables semantic retrieval.  Provider adapters own all
+    model, hosting, credential, and network behavior; the standardization
+    pipeline never downloads a model or chooses an external service.
+    """
+    global _EMBEDDING_PROVIDER, _SEMANTIC_RETRIEVER
+    _EMBEDDING_PROVIDER = provider
+    _SEMANTIC_RETRIEVER = (
+        SemanticRetriever(
+            approved_mappings_from_lookups(_MASTER_LOOKUP),
+            provider,
+        )
+        if provider is not None
+        else None
+    )
+    return _SEMANTIC_RETRIEVER
 
 
 def reload_lookup() -> None:
     """Reload the in-process lookup cache from disk (call after updating master_lookup.json)."""
     global _MASTER_LOOKUP
     _MASTER_LOOKUP = load_lookup()
+    if _EMBEDDING_PROVIDER is not None:
+        configure_embedding_provider(_EMBEDDING_PROVIDER)
 
 STANDARDIZED_COLUMN = "Standardized Value"
 # Column header AND the flag value written into it when a row is flagged
@@ -121,8 +165,13 @@ class Stats:
     batch_size: int
     api_calls_saved: int  # rows that did NOT need an API call (dupes + blanks)
     lookup_hits: int = 0   # unique values resolved from the master lookup (no API call)
+    alias_matches: int = 0  # approved aliases resolved safely without an API call
+    alias_reviews: int = 0  # modifier/alias cases forced through classifier + review
     similarity_predictions: int = 0  # conservative fuzzy predictions (no API call)
     retrieval_assisted: int = 0  # API values supplied with approved similar examples
+    semantic_retrievals: int = 0  # API values supplied with hybrid semantic evidence
+    verified_decisions: int = 0  # decisions confirmed by an optional second pass
+    verification_reviews: int = 0  # verification outcomes routed to human review
     flagged_count: int = 0  # rows marked Needs Review (LOW/missing confidence, blanks, failures)
     retries_used: int = 0
     failed_batches: list[run_log.BatchFailure] = field(default_factory=list)
@@ -239,6 +288,11 @@ def standardize_dataframe(
     country_column: str | None = None,
     field_key: str | None = None,
     canonical_values: list[str] | None = None,
+    alias_matcher: LexicalAliasMatcher | None = _ALIAS_MATCHER,
+    semantic_retriever: SemanticRetriever | None = None,
+    allow_similarity_predictions: bool = False,
+    verification_policy: VerificationPolicy | None = None,
+    verification_client=None,
 ) -> tuple[pd.DataFrame, Stats]:
     """Add a standardized-value column next to `column`, everything else intact.
 
@@ -275,8 +329,18 @@ def standardize_dataframe(
     mapping: dict[tuple[str, str], tuple[str, str, list, str]] = {}
     to_classify: list[tuple[str, str]] = []
     lookup_hits = 0
+    alias_matches = 0
+    alias_reviews = 0
     similarity_predictions = 0
-    retrieval_examples: dict[tuple[str, str], list[SimilarityMatch]] = {}
+    semantic_retrievals = 0
+    retrieval_examples: dict[
+        tuple[str, str], list[tuple[str, str, float]]
+    ] = {}
+    evidence_notes: dict[tuple[str, str], list[str]] = {}
+    forced_review: set[tuple[str, str]] = set()
+
+    if semantic_retriever is None:
+        semantic_retriever = _SEMANTIC_RETRIEVER
 
     if field_lookup is not None:
         for k in unique_nonblank:
@@ -319,6 +383,38 @@ def standardize_dataframe(
             filtered_to_classify2.append(k)
     to_classify = filtered_to_classify2
 
+    # Approved exact aliases may be accepted automatically.  Any alias result
+    # involving an uncovered meaning-changing modifier remains unresolved,
+    # carries explicit safety warnings into the model payload, and is forced
+    # into the human-review queue even if the model sounds confident.
+    if alias_matcher is not None and field_key:
+        unresolved_after_aliases: list[tuple[str, str]] = []
+        for k in to_classify:
+            country, raw = k
+            alias_result = alias_matcher.match(field_key, raw, country)
+            if alias_result.outcome is MatchOutcome.MATCH:
+                mapping[k] = (
+                    alias_result.canonical_value or blank_fill,
+                    "HIGH",
+                    [],
+                    "",
+                )
+                alias_matches += 1
+                continue
+            if alias_result.outcome is MatchOutcome.REVIEW:
+                alias_reviews += 1
+                forced_review.add(k)
+                evidence_notes[k] = list(alias_result.warnings)
+                for item in alias_result.evidence:
+                    if item.canonical_value:
+                        retrieval_examples.setdefault(k, []).append((
+                            item.matched_text,
+                            item.canonical_value,
+                            1.0,
+                        ))
+            unresolved_after_aliases.append(k)
+        to_classify = unresolved_after_aliases
+
     # Predict only near-identical variants with strong label agreement. Broader
     # matches are retained as approved examples for Claude. This runs after the
     # artifact/placeholder filters so noisy no-data values can never borrow a
@@ -327,7 +423,11 @@ def standardize_dataframe(
         still_unresolved: list[tuple[str, str]] = []
         for k in to_classify:
             country, raw = k
-            prediction = field_lookup.predict_similar(raw, country)
+            prediction = (
+                field_lookup.predict_similar(raw, country)
+                if allow_similarity_predictions
+                else None
+            )
             if prediction is not None:
                 example = prediction.matches[0]
                 confidence = "HIGH" if prediction.score == 1.0 else "MEDIUM"
@@ -342,16 +442,73 @@ def standardize_dataframe(
             else:
                 examples = field_lookup.similar(raw, country)
                 if examples:
-                    retrieval_examples[k] = examples
+                    retrieval_examples.setdefault(k, []).extend(
+                        (m.raw_value, m.standardized_value, m.score)
+                        for m in examples
+                    )
                 still_unresolved.append(k)
         to_classify = still_unresolved
+
+    # Hybrid semantic retrieval is evidence-only.  It never writes directly to
+    # ``mapping``.  Competing nearby labels are made explicit and force human
+    # review; other evidence simply helps the classifier apply the taxonomy.
+    if semantic_retriever is not None and field_key:
+        for k in to_classify:
+            country, raw = k
+            retrieved = semantic_retriever.retrieve(
+                raw,
+                field_key=field_key,
+                country=country,
+            )
+            if not retrieved.evidence and not retrieved.conflicts:
+                continue
+            semantic_retrievals += 1
+            combined_evidence = list(retrieved.evidence)
+            for conflict in retrieved.conflicts:
+                combined_evidence.extend(conflict.evidence)
+            retrieval_examples.setdefault(k, []).extend(
+                (
+                    f"[Country: {item.country}] {item.source_value}"
+                    if item.country else item.source_value,
+                    item.label,
+                    item.score,
+                )
+                for item in combined_evidence
+            )
+            if retrieved.has_conflicts:
+                labels = ", ".join(conflict.label for conflict in retrieved.conflicts)
+                evidence_notes.setdefault(k, []).append(
+                    "Hybrid retrieval found competing nearby canonical labels: "
+                    f"{labels}. Do not force an automatic decision."
+                )
+                forced_review.add(k)
+
+    # Keep the context small and deterministic.  Duplicate evidence from the
+    # lexical and semantic retrievers is collapsed, retaining its best score.
+    for k, examples in list(retrieval_examples.items()):
+        deduped: dict[tuple[str, str], float] = {}
+        for raw_example, label, score in examples:
+            identity = (raw_example, label)
+            deduped[identity] = max(deduped.get(identity, 0.0), float(score))
+        retrieval_examples[k] = [
+            (raw_example, label, score)
+            for (raw_example, label), score in sorted(
+                deduped.items(),
+                key=lambda item: (-item[1], item[0][1], item[0][0]),
+            )[:4]
+        ]
 
     # 4.1 chunking: never send the whole file as one call.
     warnings: list[str] = []
     failed_batches: list[run_log.BatchFailure] = []
     n_batches = 0
     retries_used = 0
+    verified_decisions = 0
+    verification_reviews = 0
     retrieval_assisted = sum(1 for k in to_classify if retrieval_examples.get(k))
+    effective_canonical = list(canonical_values or ())
+    if not effective_canonical and field_key:
+        effective_canonical = list(fields.get(field_key).standard_values)
 
     def _on_retry(attempt: int, exc: Exception, delay: float) -> None:
         nonlocal retries_used
@@ -368,30 +525,57 @@ def standardize_dataframe(
         display_values = [
             f"[Country: {country}] {raw}" if country else raw for country, raw in chunk
         ]
-        approved_examples = [
-            [
-                (
-                    f"[Country: {m.country}] {m.raw_value}" if m.country else m.raw_value,
-                    m.standardized_value,
-                    m.score,
-                )
-                for m in retrieval_examples.get(k, [])
-            ]
-            for k in chunk
-        ]
+        approved_examples = [retrieval_examples.get(k, []) for k in chunk]
+        chunk_notes = [evidence_notes.get(k, []) for k in chunk]
         try:
             # 4.2 retry/backoff wraps the whole classify call (build message +
             # API call + parse) — the API call inside is what can actually fail.
-            batch = call_with_retry(
-                classify_values,
-                display_values,
-                system_prompt,
-                client,
-                approved_examples,
-                max_attempts=max_attempts,
-                base_delay=retry_base_delay,
-                on_retry=_on_retry,
-            )
+            if effective_canonical:
+                request = ClassificationRequest(
+                    raw_values=display_values,
+                    system_prompt=system_prompt,
+                    canonical_values=effective_canonical,
+                    approved_examples=approved_examples,
+                    evidence_notes=chunk_notes,
+                    verification_policy=verification_policy,
+                    high_risk_indexes=frozenset(
+                        index
+                        for index, k in enumerate(chunk, start=1)
+                        if k in forced_review
+                    ),
+                )
+                outcome = call_with_retry(
+                    classify_request,
+                    request,
+                    client,
+                    verification_client,
+                    max_attempts=max_attempts,
+                    base_delay=retry_base_delay,
+                    on_retry=_on_retry,
+                )
+                batch = outcome.batch
+                verified_decisions += sum(
+                    result.decision_status == DECISION_VERIFIED
+                    for result in batch.results
+                )
+                verification_reviews += sum(
+                    result.decision_status == DECISION_HUMAN_REVIEW
+                    and bool(result.verification_reason)
+                    for result in batch.results
+                )
+            else:
+                batch = call_with_retry(
+                    classify_values,
+                    display_values,
+                    system_prompt,
+                    client,
+                    approved_examples,
+                    None,
+                    chunk_notes,
+                    max_attempts=max_attempts,
+                    base_delay=retry_base_delay,
+                    on_retry=_on_retry,
+                )
         except RetryExhaustedError as exc:
             print(f"    [FAILED] batch {n_batches} gave up after retries: {exc}")
             failed_batches.append(
@@ -411,6 +595,10 @@ def standardize_dataframe(
             confidence = r.confidence
             alternatives = r.alternatives
             reasoning = r.reasoning
+            if r.verification_reason:
+                reasoning = " ".join(
+                    part for part in (reasoning, r.verification_reason) if part
+                )
             # If the model returned a non-canonical value (e.g. echoed the
             # country-prefixed input or invented a new label), replace it with
             # the catch-all and flag for review so nothing non-standard leaks
@@ -420,6 +608,17 @@ def standardize_dataframe(
                 std_val = blank_fill
                 confidence = "LOW"
                 alternatives = []
+            if k in forced_review:
+                safety_reason = " ".join(evidence_notes.get(k, []))
+                reasoning = " ".join(
+                    part for part in (
+                        reasoning,
+                        safety_reason,
+                        "Conservative routing requires human review.",
+                    )
+                    if part
+                )
+                confidence = "LOW"
             mapping[k] = (std_val, confidence, alternatives, reasoning)
 
     # Collect HIGH confidence API results for lookup enrichment.
@@ -428,7 +627,12 @@ def standardize_dataframe(
         entry = mapping.get(k)
         if entry is not None:
             std_val, confidence, _, _ = entry
-            if confidence == "HIGH" and std_val and std_val != ERROR_FILL:
+            if (
+                confidence == "HIGH"
+                and std_val
+                and std_val != ERROR_FILL
+                and k not in forced_review
+            ):
                 new_mappings[k] = std_val
 
     # Build three new columns, aligned row-for-row with the original.
@@ -485,11 +689,16 @@ def standardize_dataframe(
         batch_size=batch_size,
         api_calls_saved=(
             (non_blank_rows - len(unique_nonblank))
-            + blanks + lookup_hits + similarity_predictions
+            + blanks + lookup_hits + alias_matches + similarity_predictions
         ),
         lookup_hits=lookup_hits,
+        alias_matches=alias_matches,
+        alias_reviews=alias_reviews,
         similarity_predictions=similarity_predictions,
         retrieval_assisted=retrieval_assisted,
+        semantic_retrievals=semantic_retrievals,
+        verified_decisions=verified_decisions,
+        verification_reviews=verification_reviews,
         flagged_count=sum(1 for v in needs_review if v.startswith(NEEDS_REVIEW_COLUMN)),
         retries_used=retries_used,
         failed_batches=failed_batches,
@@ -539,6 +748,27 @@ def main() -> int:
                          help="seconds to wait before the first retry (doubles each attempt)")
     parser.add_argument("--live", action="store_true", help="use the real Anthropic API")
     parser.add_argument(
+        "--offline-semantic",
+        action="store_true",
+        help=(
+            "exercise semantic wiring with deterministic fake embeddings; "
+            "offline/test-only and not evidence of production accuracy"
+        ),
+    )
+    parser.add_argument(
+        "--allow-similarity-predictions",
+        action="store_true",
+        help=(
+            "opt into legacy near-identical automatic predictions; disabled "
+            "by default until golden-dataset acceptance thresholds are met"
+        ),
+    )
+    parser.add_argument(
+        "--verify-uncertain",
+        action="store_true",
+        help="run an optional second classifier pass for uncertain/high-risk decisions",
+    )
+    parser.add_argument(
         "--simulate-flaky", type=int, default=0, metavar="N",
         help="inject N simulated transient errors (real anthropic.RateLimitError) "
              "then succeed — demonstrates retry recovering within budget",
@@ -554,6 +784,9 @@ def main() -> int:
         help="skip generating the ready-to-paste Jira ticket content after the run",
     )
     args = parser.parse_args()
+
+    if args.offline_semantic:
+        configure_embedding_provider(DeterministicHashEmbeddingProvider())
 
     spec = fields.get(args.field)
     data_path = args.data or DEFAULT_DATA_FILE
@@ -631,6 +864,11 @@ def main() -> int:
         country_dependent=spec.country_dependent,
         country_column=country_col,
         field_key=spec.key,
+        canonical_values=list(spec.standard_values),
+        allow_similarity_predictions=args.allow_similarity_predictions,
+        verification_policy=(
+            VerificationPolicy() if args.verify_uncertain else None
+        ),
     )
 
     # Show a preview with the raw column and the new columns side by side.
@@ -654,9 +892,17 @@ def main() -> int:
     print(f"  blank/empty raw       : {stats.blanks}  (filled as {blank_fill!r}, no API call)")
     print(f"  unique values         : {stats.unique_values}")
     print(f"  lookup hits           : {stats.lookup_hits}  (resolved from master table, no API call)")
+    print(f"  approved aliases      : {stats.alias_matches}  (safe exact aliases, no API call)")
+    print(f"  alias safety reviews  : {stats.alias_reviews}  (modifier cases sent onward and forced to review)")
     print(f"  similarity predictions: {stats.similarity_predictions}  (near-identical approved mappings)")
     print(f"  retrieval-assisted    : {stats.retrieval_assisted}  (classifier received approved examples)")
-    print(f"  sent to classifier    : {stats.unique_values - stats.lookup_hits - stats.similarity_predictions}")
+    print(f"  semantic evidence     : {stats.semantic_retrievals}  (evidence only; never auto-classified)")
+    print(f"  verified decisions    : {stats.verified_decisions}  (optional second pass agreed)")
+    print(f"  verification reviews  : {stats.verification_reviews}  (second pass inconclusive/disagreed)")
+    print(
+        f"  sent to classifier    : "
+        f"{stats.unique_values - stats.lookup_hits - stats.alias_matches - stats.similarity_predictions}"
+    )
     print(f"  duplicates reused     : {stats.duplicates_collapsed}")
     print(f"  API batches           : {stats.batches}  (size {stats.batch_size})")
     print(f"  rows needing no call  : {stats.api_calls_saved}  (dupes + blanks + lookup/prediction hits)")

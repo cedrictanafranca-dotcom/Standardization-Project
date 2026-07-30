@@ -71,22 +71,26 @@ output/                       — Standardized Excel output files written here
 
 ## Classification Pipeline
 
-**Predictive lookup extension (2026-07-29):** After exact lookup and local
-artifact filtering, the pipeline compares unseen values with approved mappings.
-Near-identical variants are predicted automatically only when the closest
-labels strongly agree. Other similar mappings are supplied to Claude as
-field- and country-appropriate historical examples. Run statistics separately
-report exact lookup hits, predictive lookup decisions, and retrieval-assisted
-API classifications.
+**Integrated predictive extension (2026-07-30):** After exact lookup and local
+artifact filtering, explicitly approved field/country aliases may resolve
+automatically. Meaning-changing modifiers remain unresolved and are forced to
+human review. Lexical and optional semantic retrieval supply a small set of
+approved evidence to Claude; semantic neighbors never classify automatically.
+Legacy near-identical automatic predictions are disabled by default until the
+golden evaluation validates an acceptance threshold. Strict canonical parsing
+and optional independent verification route invalid, conflicting, or
+disagreeing decisions to review. See `docs/integrated_predictive_pipeline.md`.
 
 1. Load file → detect format (analytics / multi-tab / multi-field / single-field)
 2. **Pre-flight lookup** — check `data/master_lookup.json` first; known values get HIGH confidence with no API call
 3. **System artifact filter** — ALL_CAPS_SNAKE_CASE values (e.g. MASKED_WHOIS_DATA) → catch-all, LOW
 4. **Data quality filter** — N/A, null, single chars, "legal form unknown", etc. → catch-all, HIGH (no API call, no review queue noise)
-5. **Claude API** — remaining unique values sent in batches (default 100); country-prefixed for positions_designations
-6. **Output parsing** — `value | HIGH`, `value | MEDIUM | Reason: ...`, `value | LOW | Alternatives: ... | Reason: ...`
-7. **Non-canonical guard** — if model returns a value not in the canonical list → catch-all, LOW, flagged for review
-8. Write results: Standardized Value, Needs Review, Review Reason columns
+5. **Approved aliases** — safe full aliases resolve locally; uncovered modifiers continue with warnings and mandatory review
+6. **Evidence retrieval** — lexical mappings and an optional injected semantic provider return context only
+7. **Claude API** — remaining unique values sent in batches (default 100); country-prefixed for positions_designations
+8. **Strict output parsing** — canonical labels and confidence contract are validated
+9. **Optional verification** — uncertain/high-risk decisions can receive a second independent pass; disagreements require review
+10. Write results: Standardized Value, Needs Review, Review Reason columns
 
 ---
 

@@ -11,6 +11,13 @@ formats, exact and predictive lookup, retrieval-assisted Claude
 classification, review/correction workflows, and downloadable Excel results.
 See `CLAUDE.md` for the detailed architecture and current known issues.
 
+The accuracy-first predictive components are now integrated on
+`codex/predictive-integration`. Exact lookups and explicitly approved aliases
+may resolve automatically; modifier cases and conflicting evidence are forced
+to review; semantic retrieval supplies evidence only. No external embedding
+provider is selected or enabled. See `docs/integrated_predictive_pipeline.md`
+for routing, safeguards, offline test commands, and remaining decisions.
+
 The isolated accuracy-first semantic evidence retriever and its provider,
 hosting, caching, and integration guidance are documented in
 [`docs/semantic_retrieval.md`](docs/semantic_retrieval.md).

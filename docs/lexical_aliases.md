@@ -99,11 +99,10 @@ Configuration loading fails with `RuleConflictError` for:
 Global aliases and country-specific overrides are deliberately allowed because
 their scopes do not conflict.
 
-## Recommended later integration
+## Integrated behavior
 
-The integration branch should call this component after the exact master
-lookup and local artifact/data-quality filters, but before fuzzy prediction or
-an API call:
+The integration branch calls this component after the exact master lookup and
+local artifact/data-quality filters, before retrieval or an API call:
 
 1. `MATCH`: use `canonical_value`, retain all evidence, and record an
    alias-specific decision count.

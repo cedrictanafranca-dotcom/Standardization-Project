@@ -80,8 +80,10 @@ For pipeline integration, preserve the current order:
 Pass only `result.evidence` plus `result.conflicts` as context. Do not turn the
 top evidence item into an automatic mapping. Prompt formatting should identify
 country and both component scores, and should explicitly call out conflicting
-labels. Because `classifier.py` and `standardize_file.py` are protected in this
-workstream, that wiring is intentionally left to the integration branch.
+labels. The integration branch now performs this wiring. Semantic results
+remain evidence-only, conflicts are presented explicitly, and competing nearby
+labels force review. No real embedding provider is selected or enabled by
+default.
 
 ## Model dependency and hosting considerations
 

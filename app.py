@@ -819,8 +819,10 @@ if run_clicked and uploaded is not None and is_analytics:
             f"{s.blanks} blank, {s.unique_values} unique values "
             f"({s.api_calls_saved} rows needed no API call; "
             f"{s.lookup_hits} exact lookup, "
-            f"{s.similarity_predictions} predictive lookup, "
-            f"{s.retrieval_assisted} retrieval-assisted API)."
+            f"{s.alias_matches} approved alias, "
+            f"{s.similarity_predictions} opt-in predictive lookup, "
+            f"{s.retrieval_assisted} retrieval-assisted API, "
+            f"{s.semantic_retrievals} with semantic evidence)."
         )
         total_flagged += s.flagged_count
         total_failed += len(s.failed_batches)
@@ -920,8 +922,10 @@ elif run_clicked and uploaded is not None and is_multi_standard:
             f"{s.blanks} blank, {s.unique_values} unique values "
             f"({s.api_calls_saved} rows needed no API call; "
             f"{s.lookup_hits} exact lookup, "
-            f"{s.similarity_predictions} predictive lookup, "
-            f"{s.retrieval_assisted} retrieval-assisted API)."
+            f"{s.alias_matches} approved alias, "
+            f"{s.similarity_predictions} opt-in predictive lookup, "
+            f"{s.retrieval_assisted} retrieval-assisted API, "
+            f"{s.semantic_retrievals} with semantic evidence)."
         )
         total_flagged += s.flagged_count
         total_failed += len(s.failed_batches)
@@ -1044,11 +1048,20 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
         f"({stats.duplicates_collapsed} duplicates reused, {stats.api_calls_saved} rows "
         "needed no API call)."
     )
-    if stats.similarity_predictions or stats.retrieval_assisted:
+    if (
+        stats.alias_matches
+        or stats.alias_reviews
+        or stats.similarity_predictions
+        or stats.retrieval_assisted
+        or stats.semantic_retrievals
+    ):
         st.info(
             f"Approved mappings also supported this run: "
-            f"{stats.similarity_predictions} similar value(s) predicted without an API call; "
-            f"{stats.retrieval_assisted} API value(s) received relevant historical examples."
+            f"{stats.alias_matches} safe alias match(es); "
+            f"{stats.alias_reviews} modifier case(s) forced to review; "
+            f"{stats.similarity_predictions} opt-in similar-value prediction(s); "
+            f"{stats.retrieval_assisted} classifier value(s) received approved examples; "
+            f"{stats.semantic_retrievals} received semantic evidence."
         )
     if stats.flagged_count:
         st.warning(
