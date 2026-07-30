@@ -25,7 +25,8 @@ class ExampleAwareStub:
 
     def complete(self, system_prompt: str, user_message: str) -> str:
         self.last_message = user_message
-        assert "Approved historical mappings for context" in user_message
+        assert "<historical_evidence" in user_message
+        assert '"canonical_value":"Executive Management"' in user_message
         return "1. Executive Management | HIGH\n[Total: 1 of 1 mapped]"
 
 
@@ -84,8 +85,9 @@ def test_ambiguous_neighbors_are_not_auto_predicted() -> None:
 def test_examples_are_prompt_context_not_extra_inputs() -> None:
     examples = [[("Managing Director", "Executive Management", 0.82)]]
     message = build_user_message(["Managing Dir"], examples)
-    assert "Approved historical mappings for context" in message
-    assert "'Managing Director' => 'Executive Management'" in message
+    assert "<uploaded_values count=\"1\">" in message
+    assert '"historical_raw_value":"Managing Director"' in message
+    assert '"canonical_value":"Executive Management"' in message
 
     stub = ExampleAwareStub()
     batch = classify_values(
