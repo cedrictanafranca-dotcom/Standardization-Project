@@ -11,6 +11,14 @@ formats, exact and predictive lookup, retrieval-assisted Claude
 classification, review/correction workflows, and downloadable Excel results.
 See `CLAUDE.md` for the detailed architecture and current known issues.
 
+The first user-reviewed validation pass was completed on 2026-08-04. All 24
+AI-disagreement cases and 20 additional agreement cases were reviewed. The
+review confirmed 18 tool corrections and six prompt-policy clarifications.
+Those decisions are now enforced through `data/reviewed_overrides.json`, an
+exact-match layer that takes priority over historical mappings without entering
+similarity calibration. A fresh unseen validation sample is the next accuracy
+milestone.
+
 The accuracy-first predictive components are now integrated on
 `codex/predictive-integration`. Exact lookups and explicitly approved aliases
 may resolve automatically; modifier cases and conflicting evidence are forced
@@ -24,11 +32,22 @@ The isolated accuracy-first semantic evidence retriever and its provider,
 hosting, caching, and integration guidance are documented in
 [`docs/semantic_retrieval.md`](docs/semantic_retrieval.md).
 
+## Mapping explanations
+
+Every processed row includes a `Mapping Reason` column. The explanation states
+the taxonomy basis for the selected canonical value and then adds supporting
+provenance when applicable (reviewed override, approved historical mapping,
+alias, similarity evidence, or model classification). Historical provenance is
+never used as the explanation by itself. The same explanation appears in the
+flagged-review interface and is updated when a reviewer confirms or changes a
+selection. Reasons are deterministic and reused for duplicate decisions; they
+do not require an additional API call per row.
+
 ## Layout
 
 ```
 prompts/   field classification instructions, one file per field (added later)
-data/      sample raw-value files for testing (git-ignored contents)
+data/      lookup, reviewed overrides, and git-ignored sample data
 src/       application code
 output/    generated / downloadable results (git-ignored contents)
 .env       local secrets — API key (git-ignored, never committed)

@@ -1,6 +1,63 @@
 # Standardization Project — Current Status and Handoff
 
-Last updated: 2026-07-30
+Last updated: 2026-08-04
+
+## 2026-08-04 reviewed-validation update
+
+- A 150-record blinded sample was independently mapped and compared with the
+  existing pipeline.
+- The user decided all 24 disagreement cases and confirmed a risk-balanced
+  20-record spot-check drawn from the 126 agreement cases.
+- The review confirmed 18 existing-tool corrections and six prompt-policy
+  clarifications. All 20 agreement spot-checks were confirmed.
+- The provisional full-sample result is 132/150 (88.0%) only if the remaining
+  106 unreviewed agreement cases are assumed correct. It is not a final
+  production accuracy claim.
+- The 24 user-decided disagreement mappings now live in
+  `data/reviewed_overrides.json`. They have highest exact-lookup priority but
+  are deliberately excluded from similarity candidates and automation-policy
+  calibration.
+- The Positions, Business Legal Form, PSC/Beneficiary Type, and BRN prompts
+  were updated with the user's six policy decisions and the generalizable
+  reviewed rules.
+- Four focused override/prompt regression tests pass. The pre-existing offline
+  routing, alias, LLM-contract, predictive, semantic, evaluation, analytics,
+  and correction tests also pass. No live API call was made.
+- Next: run the corrected pipeline against the reviewed sample as a regression
+  check, then create and review a fresh unseen 50–100-record validation sample.
+
+## 2026-08-04 fresh live validation run
+
+- Source: `C:\Users\cedric.tanafranca\Downloads\No candidate found-data-2026-08-04 10_13_40.csv`
+- The user approved sending unresolved classification values to the configured
+  Anthropic API for this run.
+- 387 of 387 rows were processed; all field types and all 41 country IDs were
+  recognized.
+- Output has zero blank standardized values, zero non-canonical values, zero
+  conflicting duplicate decisions, and zero failed API batches.
+- Five rows were flagged for review.
+- Across 262 distinct canonical decisions: 197 used historical exact lookup,
+  one used a reviewed override, 58 were classified by Claude, and six BRN
+  decisions used the validation-backed similarity policy.
+- Classified output: `output/live_validation_2026-08-04/No candidate found-classified-2026-08-04.csv`
+- Pending user review: `output/live_validation_2026-08-04/fresh_validation_review_100.md`
+- The review set contains all 64 fresh decisions plus 36 deterministic exact
+  spot checks. Once completed, compare the user's final decisions with
+  `fresh_validation_review_100_manifest.json`.
+
+### Fresh review completed
+
+- The user completed all 100 final decisions and accepted 99 tool mappings.
+- All 58 Claude API decisions and all six validated-similarity decisions were
+  confirmed, as were all five mandatory-review rows.
+- The only correction was Taiwan `General Manager`: historical lookup returned
+  `Executive Management`; the user selected `Other / Unclassified`.
+- That decision is now a country-specific reviewed override and is covered by
+  regression tests.
+- The result is 99.0% user-reviewed prompt compliance on this sample, exceeding
+  the 90% pilot target. This is not an independent subject-matter-expert
+  accuracy claim.
+- Detailed results: `output/live_validation_2026-08-04/fresh_validation_results_summary.md`.
 
 ## Where to resume
 
@@ -107,6 +164,20 @@ It does not prove 90% classification accuracy because the source file contains o
 4. Test a normal operational file of no more than 250 rows through the web app and confirm the user workflow, download, and review process.
 5. Optimize similarity retrieval with indexing/caching and add batch-level checkpoints when large-file performance becomes a priority.
 6. Re-run the combined automated test suite, review the branch diff, then merge `codex/predictive-integration` into `main` when approved.
+
+## Mapping-reason feature completed (2026-08-04)
+
+- Every output row now includes a nonblank `Mapping Reason`.
+- Reasons combine a taxonomy-based explanation with decision provenance; they
+  never cite historical mapping as the sole basis.
+- Reviewed overrides, historical lookups, approved aliases, similarity
+  decisions, model decisions, placeholders, blanks, unknown fields, and API
+  failures each receive route-appropriate wording.
+- The flagged-review UI displays `Mapping Reason` beside the override dropdown.
+- Confirming or changing a flagged value replaces the explanation with the
+  final reviewed-selection rationale before export.
+- The implementation adds no per-row explanation API calls.
+- Focused mapping/review tests and the broader offline routing suites passed.
 
 ## Security and portability notes
 

@@ -40,7 +40,10 @@ from analytics_format import (
 )
 from classifier import MockClaudeClient, RealClaudeClient
 from jira_ticket import build_ticket_text, find_countries
+from mapping_reason import build_reviewed_selection_reason
+from review_resolution import resolve_review_field_key
 from standardize_file import (
+    MAPPING_REASON_COLUMN,
     NEEDS_REVIEW_COLUMN,
     REVIEW_REASON_COLUMN,
     STANDARDIZED_COLUMN,
@@ -95,13 +98,13 @@ def _render_run_summary(
         st.warning(
             f"**{low_n} row(s) flagged for review.** "
             "Check the **Needs Review** column for ranked alternatives and "
-            "**Review Reason** for context. "
+            "**Mapping Reason** for the decision explanation. "
             "Use **Submit corrections for review** below to flag any disagreements."
         )
     if med_n:
         st.info(
             f"**{med_n} row(s) classified with MEDIUM confidence** — accepted but involved judgment. "
-            "Review the **Review Reason** column before treating these as final."
+            "Review the **Mapping Reason** column before treating these as final."
         )
 
     # Per-field breakdown table for mixed-field runs.
@@ -179,19 +182,6 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
     if not flagged_idx:
         return result_df
 
-    # Build field-type → standard_values and display_name maps for multi-field runs.
-    field_std_vals: dict[str, list] = {}
-    field_display_names: dict[str, str] = {}
-    for fs in rr.get("field_summaries", []):
-        if fs.get("known") and fs.get("field_key"):
-            try:
-                sp = fields.get(fs["field_key"])
-                ft_key = str(fs.get("field_type", "")).strip()
-                field_std_vals[ft_key] = sp.standard_values
-                field_display_names[ft_key] = fs.get("display_name") or sp.display_name
-            except Exception:
-                pass
-
     # For single-field runs, use the run-level display name.
     single_field_display = rr.get("field_display") or (
         rr["spec"].display_name if rr.get("spec") else None
@@ -217,7 +207,9 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
             current_std = _norm_val(row.get(STANDARDIZED_COLUMN))
             nr_val = _norm_val(row.get(NEEDS_REVIEW_COLUMN))
             reason = (
-                _norm_val(row.get(REVIEW_REASON_COLUMN))
+                _norm_val(row.get(MAPPING_REASON_COLUMN))
+                if MAPPING_REASON_COLUMN in result_df.columns
+                else _norm_val(row.get(REVIEW_REASON_COLUMN))
                 if REVIEW_REASON_COLUMN in result_df.columns
                 else ""
             )
@@ -231,14 +223,30 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
             alts: list[str] = []
             prefix = NEEDS_REVIEW_COLUMN + ": "
             if nr_val.startswith(prefix):
-                alts = [a.strip() for a in nr_val[len(prefix):].split(" | ") if a.strip()]
+                alt_text = nr_val[len(prefix):].replace(" | ", " / ")
+                alts = [a.strip().rstrip("?") for a in alt_text.split(" / ") if a.strip()]
+
+            # Resolve both original input labels and normalized output labels.
+            # Example: a summary may say "Standardized Position" while the
+            # result row says "Universal Position".
+            row_field_key = resolve_review_field_key(
+                ft_val,
+                rr.get("field_summaries", []),
+                rr.get("field_key"),
+            )
 
             # Options = the field's full canonical standard values only.
             options: list[str] = []
+            row_spec = None
             if run_type == "single_field" and rr.get("spec"):
-                options = list(rr["spec"].standard_values)
-            elif ft_val and ft_val in field_std_vals:
-                options = list(field_std_vals[ft_val])
+                row_spec = rr["spec"]
+            elif row_field_key:
+                try:
+                    row_spec = fields.get(row_field_key)
+                except KeyError:
+                    row_spec = None
+            if row_spec:
+                options = list(row_spec.standard_values)
             if not options:
                 options = [v for v in ([current_std] + alts) if v] or ["Unknown"]
 
@@ -252,8 +260,8 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
                 default_idx = options.index(current_std)
 
             # Resolve human-readable field type label.
-            if ft_val and ft_val in field_display_names:
-                field_label = field_display_names[ft_val]
+            if row_spec:
+                field_label = row_spec.display_name
             elif run_type == "single_field" and single_field_display:
                 field_label = single_field_display
             else:
@@ -276,7 +284,7 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
                 else:
                     st.markdown("**Suggested:** *(no alternatives — model was certain)*")
                 if reason:
-                    st.markdown(f"**Reason:** {reason}")
+                    st.markdown(f"**Mapping reason:** {reason}")
             with col2:
                 selections[idx] = st.selectbox(
                     "Set final classification",
@@ -293,12 +301,6 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
     if submitted:
         updated = result_df.copy()
 
-        # Build field_type → field_key map for this run.
-        ft_to_fk: dict[str, str] = {}
-        for fs in rr.get("field_summaries", []):
-            if fs.get("known") and fs.get("field_key") and fs.get("field_type"):
-                ft_to_fk[str(fs["field_type"]).strip()] = fs["field_key"]
-
         pending_saves = []
         for idx, new_val in selections.items():
             row = result_df.loc[idx]
@@ -313,9 +315,22 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
                 if field_col and field_col in result_df.columns
                 else ""
             )
-            fk = ft_to_fk.get(ft) or rr.get("field_key")
+            fk = resolve_review_field_key(
+                ft,
+                rr.get("field_summaries", []),
+                rr.get("field_key"),
+            )
 
+            previous_value = _norm_val(row.get(STANDARDIZED_COLUMN))
             updated.at[idx, STANDARDIZED_COLUMN] = new_val
+            updated.at[idx, MAPPING_REASON_COLUMN] = build_reviewed_selection_reason(
+                field_key=fk,
+                raw_value=raw,
+                standardized_value=new_val,
+                country=country_val,
+                previous_value=previous_value,
+                confirmed=new_val == previous_value,
+            )
             updated.at[idx, NEEDS_REVIEW_COLUMN] = ""
             updated.at[idx, REVIEW_REASON_COLUMN] = ""
 
@@ -836,7 +851,7 @@ if run_clicked and uploaded is not None and is_analytics:
     if total_flagged:
         st.warning(
             f"{total_flagged} total row(s) flagged across all field types — "
-            f"check the {NEEDS_REVIEW_COLUMN!r} and {REVIEW_REASON_COLUMN!r} columns."
+            f"check the {NEEDS_REVIEW_COLUMN!r} and {MAPPING_REASON_COLUMN!r} columns."
         )
     if total_failed:
         st.error(
@@ -844,7 +859,12 @@ if run_clicked and uploaded is not None and is_analytics:
             f"in both the {STANDARDIZED_COLUMN!r} and {NEEDS_REVIEW_COLUMN!r} columns."
         )
 
-    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    our_cols = [
+        STANDARDIZED_COLUMN,
+        MAPPING_REASON_COLUMN,
+        NEEDS_REVIEW_COLUMN,
+        REVIEW_REASON_COLUMN,
+    ]
     original_cols = [c for c in result_df.columns if c not in our_cols]
 
     ft_col_actual = next(
@@ -939,12 +959,17 @@ elif run_clicked and uploaded is not None and is_multi_standard:
     if total_flagged:
         st.warning(
             f"{total_flagged} row(s) flagged — check the {NEEDS_REVIEW_COLUMN!r} "
-            f"and {REVIEW_REASON_COLUMN!r} columns."
+            f"and {MAPPING_REASON_COLUMN!r} columns."
         )
     if total_failed:
         st.error(f"{total_failed} batch(es) failed — rows marked in {STANDARDIZED_COLUMN!r}.")
 
-    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    our_cols = [
+        STANDARDIZED_COLUMN,
+        MAPPING_REASON_COLUMN,
+        NEEDS_REVIEW_COLUMN,
+        REVIEW_REASON_COLUMN,
+    ]
     original_cols = [c for c in result_df.columns if c not in our_cols]
     default_keep = [c for c in [country_col, field_col, value_col] if c and c in original_cols]
 
@@ -1069,7 +1094,7 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
         st.warning(
             f"{stats.flagged_count} row(s) flagged in the {NEEDS_REVIEW_COLUMN!r} column "
             f"(LOW/missing confidence, blank input, or API failure) — check the "
-            f"{NEEDS_REVIEW_COLUMN!r} column for ranked alternatives and {REVIEW_REASON_COLUMN!r} "
+            f"{NEEDS_REVIEW_COLUMN!r} column for ranked alternatives and {MAPPING_REASON_COLUMN!r} "
             "for reasoning before treating the rest as final."
         )
     if stats.failed_batches:
@@ -1078,7 +1103,12 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
             f"are marked in both the {STANDARDIZED_COLUMN!r} and {NEEDS_REVIEW_COLUMN!r} columns."
         )
 
-    our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    our_cols = [
+        STANDARDIZED_COLUMN,
+        MAPPING_REASON_COLUMN,
+        NEEDS_REVIEW_COLUMN,
+        REVIEW_REASON_COLUMN,
+    ]
     original_cols = [c for c in result_df.columns if c not in our_cols]
     default_keep = [raw_col]
     if country_col:
@@ -1119,13 +1149,21 @@ if _rr is not None:
             field_col=_rr.get('field_col'),
         )
 
-    _our_cols = [STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    _our_cols = [
+        STANDARDIZED_COLUMN,
+        MAPPING_REASON_COLUMN,
+        NEEDS_REVIEW_COLUMN,
+        REVIEW_REASON_COLUMN,
+    ]
     st.subheader("Result")
     _selected_original = st.multiselect(
         "Columns to include in export",
         options=_rr['original_cols'],
         default=[c for c in _rr['default_keep'] if c in _rr['original_cols']],
-        help="Standardized Value, Needs Review, and Review Reason are always included.",
+        help=(
+            "Standardized Value, Mapping Reason, Needs Review, and Review Reason "
+            "are always included."
+        ),
     )
     _export_df = _result_df[
         [c for c in _selected_original if c in _result_df.columns]

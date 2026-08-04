@@ -14,6 +14,8 @@ Strict Mapping: Each input must map to exactly one canonical value. Never invent
 Priority Hierarchy: If an input could map to multiple values: Root Business \> Owner / Beneficial Owner \> Controller \> Other / Unclassified  
 PSC / Control cases: Where PSC or ISC signals a control relationship rather than a direct ownership stake, map to Controller.  
 Entity records: Any record representing a company, corporate body, or parent structure maps to Root Business regardless of the relationship label used.  
+Bare "Parent" defaults to Root Business unless the input explicitly establishes a natural-person or family relationship.
+Ownership descriptors: shareholding-percentage labels, sole-shareholder identity-change labels, "Associé en nom," and entries naming an indefinitely responsible partner map to Owner / Beneficial Owner.
 Blanks / Nulls: Map to Other / Unclassified.  
 Formatting: Return all outputs in Title Case exactly as the canonical values appear above (e.g., Owner / Beneficial Owner, not owner/beneficial owner).
 

@@ -3,6 +3,7 @@
 
 # Virtual environment
 .venv/
+.codex_work/
 
 # Python
 __pycache__/
@@ -18,8 +19,10 @@ __pycache__/
 data/*
 !data/.gitkeep
 !data/master_lookup.json
+!data/reviewed_overrides.json
 output/*
 !output/.gitkeep
+outputs/
 
 # OS
 Thumbs.db

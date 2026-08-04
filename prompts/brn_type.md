@@ -20,6 +20,7 @@ LEI: ISO 17442 globally unique 20-character code identifying legal entities part
 Charity Number: Regulator-issued identifier for nonprofit or charitable organizations, distinct from standard company registration.  
 Proprietary / Third-party ID: Non-government identifier assigned by a commercial data vendor or industry body for entity tracking and data enrichment.  
 Other / Unclassified: Registration type is indeterminate, unrecognized, invalid, or does not conform to a standard government-issued or widely recognized identifier. Includes proprietary bank codes and procurement codes such as SWIFT/BIC and CAGE.
+Reviewed identifier clarifications: AUT NATL BANK NO and the US General Services Administration Unique Entity Identifier map to Business Registration Number. ALEI does not map to LEI without evidence that it denotes the ISO 17442 Legal Entity Identifier and therefore maps to Other / Unclassified.
 
 Mapping Rules  
 Strict Mapping: You are prohibited from inventing new values. Every input must map to one of the 7 approved standard values above.  

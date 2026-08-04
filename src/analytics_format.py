@@ -28,6 +28,7 @@ import fields
 from classifier import MockClaudeClient, RealClaudeClient
 from country_lookup import resolve_country_id
 from standardize_file import (
+    MAPPING_REASON_COLUMN,
     NEEDS_REVIEW_COLUMN,
     REVIEW_REASON_COLUMN,
     STANDARDIZED_COLUMN,
@@ -198,7 +199,7 @@ def process_analytics_df(
       5. Recombine in original row order.
 
     Returns the enriched DataFrame (original columns + Standardized Value /
-    Needs Review / Review Reason) and an AnalyticsStats summary.
+    Mapping Reason / Needs Review / Review Reason) and an AnalyticsStats summary.
     """
     # Drop rows below the minimum count threshold before any processing.
     if min_count > 0:
@@ -221,6 +222,7 @@ def process_analytics_df(
 
     # Pre-populate result columns so every row gets a value.
     result[STANDARDIZED_COLUMN] = ""
+    result[MAPPING_REASON_COLUMN] = ""
     result[NEEDS_REVIEW_COLUMN] = ""
     result[REVIEW_REASON_COLUMN] = ""
 
@@ -235,6 +237,9 @@ def process_analytics_df(
         if field_key is None:
             unknown_types.append(str(ft))
             result.loc[group_idx, STANDARDIZED_COLUMN] = "Unknown field type"
+            result.loc[group_idx, MAPPING_REASON_COLUMN] = (
+                f"No classifier is registered for field type {ft!r}, so no taxonomy mapping was accepted."
+            )
             result.loc[group_idx, NEEDS_REVIEW_COLUMN] = (
                 f"{NEEDS_REVIEW_COLUMN}: no classifier for field type {ft!r}"
             )
@@ -275,6 +280,7 @@ def process_analytics_df(
         # Use sub_result.index (the original row positions) rather than .values so
         # row order changes inside standardize_dataframe never cause misalignment.
         result.loc[sub_result.index, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN]
+        result.loc[sub_result.index, MAPPING_REASON_COLUMN] = sub_result[MAPPING_REASON_COLUMN]
         result.loc[sub_result.index, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN]
         result.loc[sub_result.index, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN]
 
@@ -372,6 +378,7 @@ def process_standard_multi_field_df(
 
     result = df.copy()
     result[STANDARDIZED_COLUMN] = ""
+    result[MAPPING_REASON_COLUMN] = ""
     result[NEEDS_REVIEW_COLUMN] = ""
     result[REVIEW_REASON_COLUMN] = ""
 
@@ -385,6 +392,9 @@ def process_standard_multi_field_df(
         if field_key is None:
             unknown_types.append(str(ft))
             result.loc[group_idx, STANDARDIZED_COLUMN] = "Unknown field type"
+            result.loc[group_idx, MAPPING_REASON_COLUMN] = (
+                f"No classifier is registered for field type {ft!r}, so no taxonomy mapping was accepted."
+            )
             result.loc[group_idx, NEEDS_REVIEW_COLUMN] = (
                 f"{NEEDS_REVIEW_COLUMN}: no classifier for field type {ft!r}"
             )
@@ -419,6 +429,7 @@ def process_standard_multi_field_df(
         )
 
         result.loc[sub_result.index, STANDARDIZED_COLUMN] = sub_result[STANDARDIZED_COLUMN]
+        result.loc[sub_result.index, MAPPING_REASON_COLUMN] = sub_result[MAPPING_REASON_COLUMN]
         result.loc[sub_result.index, NEEDS_REVIEW_COLUMN] = sub_result[NEEDS_REVIEW_COLUMN]
         result.loc[sub_result.index, REVIEW_REASON_COLUMN] = sub_result[REVIEW_REASON_COLUMN]
 

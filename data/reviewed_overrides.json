@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "description": "Human-reviewed exact decisions from the 2026-08-04 validation and UI acceptance reviews. These override historical exact mappings but are excluded from similarity calibration and retrieval candidates.",
+  "source": "2026-08-04 validation review and UI acceptance testing",
+  "fields": {
+    "positions_designations": {
+      "consistent": {},
+      "by_country": {
+        "France": {
+          "General Manager,Member": "Executive Management",
+          "Liquidating Agent,Managing Partner": "Authorized Representative"
+        },
+        "Germany": {
+          "Manager,Sole Confidential Clerk / Sole Procurator": "Authorized Representative"
+        },
+        "Greece": {
+          "Πρόεδρος": "Executive Management"
+        },
+        "Hungary": {
+          "General Manager": "Other / Unclassified"
+        },
+        "Hong Kong": {
+          "Director": "Director"
+        },
+        "Indonesia": {
+          "Company Secretary": "Other / Unclassified",
+          "Director,Personnel Director": "Director"
+        },
+        "Italy": {
+          "Associate": "Other / Unclassified",
+          "ADMINISTRATIVE PARTNER, TECHNICAL MANAGER": "Owner / Controller"
+        },
+        "Taiwan, Province of China": {
+          "General Manager": "Other / Unclassified"
+        },
+        "United Kingdom": {
+          "INSURANCE EXECUTIVE": "Executive Management",
+          "WATER INDUSTRY CHIEF EXECUTIVE": "Executive Management"
+        },
+        "United States": {
+          "MANAGER MEMBER": "Owner / Controller"
+        }
+      }
+    },
+    "business_legal_form": {
+      "consistent": {
+        "Fundação ou Associação Domiciliada no Exterior": "Non-Profit / Cooperative",
+        "Joint Inheritance Rights": "Partnership",
+        "Sa": "Company",
+        "SARL COOPERATIVE CRAISSANAL": "Company"
+      },
+      "by_country": {}
+    },
+    "psc_beneficiary_type": {
+      "consistent": {
+        "A": "Other / Unclassified",
+        "Associé en nom": "Owner / Beneficial Owner",
+        "Cambio de identidad del socio único": "Owner / Beneficial Owner",
+        "Estimated Shareholding Percentage": "Owner / Beneficial Owner",
+        "Gérant, Associé indéfiniment responsable": "Owner / Beneficial Owner",
+        "Parent": "Root Business"
+      },
+      "by_country": {}
+    },
+    "brn_type": {
+      "consistent": {
+        "ALEI": "Other / Unclassified",
+        "AUT NATL BANK NO": "Business Registration Number",
+        "US General Services Administration Unique Entity Identifier": "Business Registration Number"
+      },
+      "by_country": {}
+    }
+  }
+}

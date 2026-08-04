@@ -47,6 +47,7 @@ DEFAULT_MASTER_FILE = (
     Path.home() / "Downloads" / "[FINAL]- ALL Countries GG Standardization Remapping.xlsx"
 )
 DEFAULT_LOOKUP_FILE = config.DATA_DIR / "master_lookup.json"
+DEFAULT_REVIEWED_OVERRIDES_FILE = config.DATA_DIR / "reviewed_overrides.json"
 
 SIMILARITY_EXAMPLE_MIN_SCORE = 0.45
 SIMILARITY_AUTO_SCORE = 0.97
@@ -247,6 +248,12 @@ class FieldLookup:
     field_key: str
     consistent: dict[str, str] = dc_field(default_factory=dict)
     by_country: dict[str, dict[str, str]] = dc_field(default_factory=dict)
+    # Human-reviewed decisions are intentionally kept separate from the
+    # historical master data.  They win exact lookup resolution but are not
+    # included in similarity candidates, so a small reviewed sample cannot
+    # silently broaden predictive automation or invalidate its calibration.
+    reviewed_consistent: dict[str, str] = dc_field(default_factory=dict)
+    reviewed_by_country: dict[str, dict[str, str]] = dc_field(default_factory=dict)
     _similarity_cache: dict[str, list[tuple[str, str, str, str]]] = dc_field(
         default_factory=dict, init=False, repr=False,
     )
@@ -256,17 +263,39 @@ class FieldLookup:
 
     def get(self, raw_value: str, country: str = "") -> Optional[str]:
         """Return the standardized value, or None if not in the lookup."""
+        decision = self.get_with_source(raw_value, country)
+        return decision[0] if decision is not None else None
+
+    def get_with_source(
+        self, raw_value: str, country: str = ""
+    ) -> Optional[tuple[str, str]]:
+        """Return ``(standardized value, provenance)`` for an exact match.
+
+        Provenance distinguishes reviewed decisions from historical source
+        mappings so downstream exports can explain both the taxonomy basis and
+        the supporting evidence without reducing the explanation to
+        "historical mapping".
+        """
         raw_n = _norm(raw_value)
         if not raw_n:
             return None
         country_n = _norm(country)
+        # Human-reviewed decisions have highest priority.
+        if country_n and country_n in self.reviewed_by_country:
+            result = self.reviewed_by_country[country_n].get(raw_n)
+            if result is not None:
+                return result, "reviewed_country"
+        result = self.reviewed_consistent.get(raw_n)
+        if result is not None:
+            return result, "reviewed_global"
         # Country-specific first.
         if country_n and country_n in self.by_country:
             result = self.by_country[country_n].get(raw_n)
             if result is not None:
-                return result
+                return result, "historical_country"
         # Country-agnostic fallback.
-        return self.consistent.get(raw_n)
+        result = self.consistent.get(raw_n)
+        return (result, "historical_global") if result is not None else None
 
     def similar(
         self,
@@ -731,7 +760,10 @@ def merge_api_results(
     return added
 
 
-def load_lookup(lookup_file: Path = DEFAULT_LOOKUP_FILE) -> dict[str, FieldLookup]:
+def load_lookup(
+    lookup_file: Path = DEFAULT_LOOKUP_FILE,
+    reviewed_overrides_file: Path = DEFAULT_REVIEWED_OVERRIDES_FILE,
+) -> dict[str, FieldLookup]:
     """Load the lookup from S3 if configured, otherwise from the local file.
 
     S3 is the source of truth when credentials are present — it always has the
@@ -756,10 +788,19 @@ def load_lookup(lookup_file: Path = DEFAULT_LOOKUP_FILE) -> dict[str, FieldLooku
     else:
         return {}
 
+    reviewed_data: dict = {}
+    if reviewed_overrides_file.exists():
+        payload = json.loads(reviewed_overrides_file.read_text(encoding="utf-8"))
+        reviewed_data = payload.get("fields", payload)
+
     lookups: dict[str, FieldLookup] = {}
-    for fk, fdata in data.items():
+    for fk in set(data) | set(reviewed_data):
+        fdata = data.get(fk, {})
+        reviewed = reviewed_data.get(fk, {})
         lk = FieldLookup(field_key=fk)
         lk.consistent = fdata.get("consistent", {})
         lk.by_country = fdata.get("by_country", {})
+        lk.reviewed_consistent = reviewed.get("consistent", {})
+        lk.reviewed_by_country = reviewed.get("by_country", {})
         lookups[fk] = lk
     return lookups

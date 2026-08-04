@@ -81,6 +81,7 @@ from classifier import (
 )
 from fault_injection import FlakyClient, rate_limit_error, server_error
 from jira_ticket import build_ticket_text, find_countries
+from mapping_reason import build_mapping_reason
 from master_lookup import load_lookup
 from retry import RetryExhaustedError, call_with_retry
 from lexical_aliases import LexicalAliasMatcher, MatchOutcome, load_default_matcher
@@ -153,6 +154,7 @@ def reload_lookup() -> None:
         configure_embedding_provider(_EMBEDDING_PROVIDER)
 
 STANDARDIZED_COLUMN = "Standardized Value"
+MAPPING_REASON_COLUMN = "Mapping Reason"
 # Column header AND the flag value written into it when a row is flagged
 # (blank otherwise) — a single constant serves both, by design.
 NEEDS_REVIEW_COLUMN = "Needs Review"
@@ -353,6 +355,7 @@ def standardize_dataframe(
     field_lookup = _MASTER_LOOKUP.get(field_key) if field_key else None
     # (country, raw_value) -> (std_value, confidence, alternatives, reasoning)
     mapping: dict[tuple[str, str], tuple[str, str, list, str]] = {}
+    mapping_sources: dict[tuple[str, str], str] = {}
     to_classify: list[tuple[str, str]] = []
     lookup_hits = 0
     alias_matches = 0
@@ -374,10 +377,13 @@ def standardize_dataframe(
     if field_lookup is not None:
         for k in unique_nonblank:
             country, raw = k
-            result = field_lookup.get(raw, country)
-            if result is not None:
-                # Known-good mapping: HIGH confidence, no alternatives, no reasoning needed.
+            decision = field_lookup.get_with_source(raw, country)
+            if decision is not None:
+                result, source = decision
+                # Exact matches are HIGH confidence; a substantive reason with
+                # reviewed/historical provenance is added to the export below.
                 mapping[k] = (result, "HIGH", [], "")
+                mapping_sources[k] = source
                 lookup_hits += 1
             else:
                 to_classify.append(k)
@@ -395,6 +401,7 @@ def standardize_dataframe(
                 blank_fill, "LOW", [],
                 f"{raw!r} appears to be a system data artifact — mapped to catch-all for review.",
             )
+            mapping_sources[k] = "system_artifact"
         else:
             filtered_to_classify.append(k)
     to_classify = filtered_to_classify
@@ -408,6 +415,7 @@ def standardize_dataframe(
             mapping[k] = (
                 blank_fill, "HIGH", [], "",
             )
+            mapping_sources[k] = "placeholder"
         else:
             filtered_to_classify2.append(k)
     to_classify = filtered_to_classify2
@@ -433,6 +441,7 @@ def standardize_dataframe(
                         [],
                         "",
                     )
+                    mapping_sources[k] = "approved_alias"
                     alias_matches += 1
                     continue
                 alias_deferred += 1
@@ -504,6 +513,7 @@ def standardize_dataframe(
                     [],
                     reasoning,
                 )
+                mapping_sources[k] = "similarity"
                 similarity_predictions += 1
             elif prediction is not None:
                 example = prediction.matches[0]
@@ -515,6 +525,7 @@ def standardize_dataframe(
                 mapping[k] = (
                     prediction.standardized_value, confidence, [], reasoning,
                 )
+                mapping_sources[k] = "similarity"
                 similarity_predictions += 1
             else:
                 examples = field_lookup.similar(raw, country)
@@ -661,6 +672,7 @@ def standardize_dataframe(
             for k in chunk:
                 # "" confidence -> always flagged, regardless of ERROR_FILL's text.
                 mapping[k] = (ERROR_FILL, "", [], "")
+                mapping_sources[k] = "api_failure"
             continue
 
         warnings.extend(f"batch {n_batches}: {w}" for w in batch.warnings)
@@ -697,6 +709,7 @@ def standardize_dataframe(
                 )
                 confidence = "LOW"
             mapping[k] = (std_val, confidence, alternatives, reasoning)
+            mapping_sources[k] = "model"
 
     # Collect HIGH confidence API results for lookup enrichment.
     new_mappings: dict = {}
@@ -712,17 +725,25 @@ def standardize_dataframe(
             ):
                 new_mappings[k] = std_val
 
-    # Build three new columns, aligned row-for-row with the original.
+    # Build output columns, aligned row-for-row with the original.
     # Blanks are auto-filled with no real classification attempt — flagged too.
     # LOW:    Needs Review shows "Needs Review: Alt1? / Alt2?"; Review Reason has reasoning.
     # MEDIUM: Needs Review is blank; Review Reason has reasoning (decision support, not action required).
     # HIGH:   both new columns blank — no noise for the reviewer.
     standardized: list[str] = []
+    mapping_reasons: list[str] = []
     needs_review: list[str] = []
     review_reason: list[str] = []
     for k in keys:
         if k[1] == "":
             standardized.append(blank_fill)
+            mapping_reasons.append(build_mapping_reason(
+                field_key=field_key,
+                raw_value="",
+                standardized_value=blank_fill,
+                source="blank",
+                country=k[0],
+            ))
             needs_review.append(NEEDS_REVIEW_COLUMN)
             review_reason.append("")
             continue
@@ -731,6 +752,14 @@ def standardize_dataframe(
         if not value:
             value = blank_fill
         standardized.append(value)
+        mapping_reasons.append(build_mapping_reason(
+            field_key=field_key,
+            raw_value=k[1],
+            standardized_value=value,
+            source=mapping_sources.get(k, "model"),
+            country=k[0],
+            existing_reason=reasoning,
+        ))
         if confidence in ("", "LOW"):
             alts_str = " / ".join(f"{a}?" for a in alternatives) if alternatives else ""
             needs_review.append(
@@ -747,13 +776,19 @@ def standardize_dataframe(
     # 3.2 passthrough + 3.3 insert next to the raw column.
     result = df.copy()
     result = result.drop(columns=[
-        c for c in (STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN)
+        c for c in (
+            STANDARDIZED_COLUMN,
+            MAPPING_REASON_COLUMN,
+            NEEDS_REVIEW_COLUMN,
+            REVIEW_REASON_COLUMN,
+        )
         if c in result.columns
     ])
     insert_at = result.columns.get_loc(column) + 1
     result.insert(insert_at, STANDARDIZED_COLUMN, standardized)
-    result.insert(insert_at + 1, NEEDS_REVIEW_COLUMN, needs_review)
-    result.insert(insert_at + 2, REVIEW_REASON_COLUMN, review_reason)
+    result.insert(insert_at + 1, MAPPING_REASON_COLUMN, mapping_reasons)
+    result.insert(insert_at + 2, NEEDS_REVIEW_COLUMN, needs_review)
+    result.insert(insert_at + 3, REVIEW_REASON_COLUMN, review_reason)
 
     non_blank_rows = len(keys) - blanks
     stats = Stats(
@@ -950,7 +985,13 @@ def main() -> int:
     )
 
     # Show a preview with the raw column and the new columns side by side.
-    preview_cols = [raw_col, STANDARDIZED_COLUMN, NEEDS_REVIEW_COLUMN, REVIEW_REASON_COLUMN]
+    preview_cols = [
+        raw_col,
+        STANDARDIZED_COLUMN,
+        MAPPING_REASON_COLUMN,
+        NEEDS_REVIEW_COLUMN,
+        REVIEW_REASON_COLUMN,
+    ]
     if "country" in result.columns:
         preview_cols = ["country"] + preview_cols
     print("\nPreview (first 12 rows):")
