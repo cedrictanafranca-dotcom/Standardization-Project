@@ -179,6 +179,53 @@ It does not prove 90% classification accuracy because the source file contains o
 - The implementation adds no per-row explanation API calls.
 - Focused mapping/review tests and the broader offline routing suites passed.
 
+## In-app user guidance completed (2026-08-04)
+
+- Consolidated the earlier How to Use, Field Definitions, and Classification
+  Rules pages into one beginner-friendly `Help & Field Guide`.
+- The guide uses a four-step Quick Start and lets users choose a field once to
+  see result meanings, decision rules, country rules, and approved examples.
+- Navigation now keeps only Help & Field Guide and Review Corrections alongside
+  the main Standardization Tool page.
+- Added a consistency test that fails if a configured field or canonical value
+  is missing user guidance.
+- The older Word definitions file is not embedded because several examples no
+  longer match the reviewed source-of-truth rules.
+- The combined guide shows plain-language decision logic, priorities, important
+  exceptions, the active European country-rule table, and reviewed exact
+  overrides.
+- The raw prompt files remain protected and version-controlled. The UI directs
+  users to corrections for exact mapping changes and the existing rule-update
+  flag for broader policy requests.
+
+## Developer script export added (2026-08-05)
+
+- The standardized Excel download now includes a `Developer Script` worksheet
+  with one row per unique finalized mapping.
+- Ready rows can also be downloaded as a paste-ready `.cs` script from the
+  optional Developer handoff section in the UI.
+- The generator validates review status, raw/final values, country enums,
+  duplicate mappings, and the user-provided `~value~` delimiter.
+- The provided example supplies `BusinessTypeStandardization` and the
+  `~value~` syntax. All ten fields now have visibly provisional, best-effort
+  constructor names so the full workflow can be demonstrated before the
+  developer contract is confirmed.
+- The example is used only as a code-format template and never as classification
+  or mapping evidence.
+
+## Trulioo-inspired UI refresh (2026-08-05)
+
+- Added the supplied light-green Trulioo wordmark to the application assets and
+  displays it at the top of the sidebar on every page.
+- Added a shared visual theme with a dark-green 270px sidebar, teal active
+  navigation state, pale-gray workspace, serif headings, compact sans-serif
+  body text, and consistent cards, tabs, inputs, buttons, and tables.
+- Replaced filename-derived multipage navigation with explicit titled and
+  icon-based navigation for Standardize a File, Help & Field Guide, and Review
+  Corrections.
+- `app.py` is now the small navigation entry point; the original processing UI
+  lives in `standardize_page.py` without changing its classification behavior.
+
 ## Security and portability notes
 
 - `.env` contains local configuration and must remain excluded from Git.

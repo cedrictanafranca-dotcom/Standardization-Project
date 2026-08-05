@@ -18,44 +18,23 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import corrections as cq
+from ui_theme import apply_brand_theme
 
-st.set_page_config(page_title="Review Corrections — Standardization Tool", layout="wide")
+apply_brand_theme()
 
-st.markdown("""
-<style>
-section[data-testid="stSidebar"] {
-    background-color: #0F2A25 !important;
-}
-section[data-testid="stSidebar"] h1,
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3,
-section[data-testid="stSidebar"] p,
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div {
-    color: #FFFFFF !important;
-}
-div[data-testid="stAlert"] {
-    background-color: #DCE9DD !important;
-    border-left-color: #1F6E5C !important;
-}
-.correction-card {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 16px;
-    margin-bottom: 12px;
-    background: #FAFAFA;
-}
-</style>
-""", unsafe_allow_html=True)
+# ── Page header ───────────────────────────────────────────────────────────────
 
-if Path("assets/trulioo_logo.png").exists():
-    st.logo("assets/trulioo_logo.png")
+pending = cq.get_pending()
+history = cq.get_history()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+st.title("Correction Review Queue")
+st.caption(
+    "Corrections submitted by reviewers appear here. Approve to reuse the value "
+    "without another API call, reject to discard it, or flag a recurring pattern "
+    "for a broader rule update."
+)
 
-with st.sidebar:
-    st.header("Demo")
+with st.expander("Demo controls"):
     st.caption(
         "Load realistic sample corrections to walk through the approval workflow "
         "in a presentation."
@@ -77,19 +56,6 @@ with st.sidebar:
             st.info("No demo data to clear.")
         st.rerun()
 
-# ── Page header ───────────────────────────────────────────────────────────────
-
-pending = cq.get_pending()
-history = cq.get_history()
-
-st.title("Correction Review Queue")
-st.caption(
-    "Corrections submitted by reviewers appear here. Approve to write the value "
-    "into the master lookup (no API call for that value in future runs). "
-    "Reject to discard. Flag for prompt update if the pattern recurs enough to "
-    "warrant a rule change in the taxonomy prompt."
-)
-
 tab_pending, tab_history = st.tabs([
     f"Pending ({len(pending)})",
     f"History ({len(history)})",
@@ -101,7 +67,7 @@ with tab_pending:
     if not pending:
         st.info(
             "No corrections pending. Reviewers submit corrections from the main page "
-            "after running a file. Use **Load demo data** in the sidebar to see a "
+            "after running a file. Use **Demo controls** above to see a "
             "walkthrough example."
         )
     else:

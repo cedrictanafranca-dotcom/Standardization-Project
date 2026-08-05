@@ -43,6 +43,44 @@ flagged-review interface and is updated when a reviewer confirms or changes a
 selection. Reasons are deterministic and reused for duplicate decisions; they
 do not require an additional API call per row.
 
+## In-app user guidance
+
+The Streamlit application includes one consolidated `Help & Field Guide` page:
+
+- `Quick Start` explains the four-step operating workflow, file formats, output
+  columns, and advanced settings.
+- `Field Guide` lets a user choose a field once and then view result meanings,
+  decision rules, country-specific rules, and approved examples together.
+- `Common Questions` provides short answers for the most likely points of
+  confusion.
+
+The detailed AI prompts are read-only and are not exposed for editing in the
+UI. `Review Corrections` remains a separate action page.
+
+The app uses an explicit three-item navigation (`Standardize a File`, `Help &
+Field Guide`, and `Review Corrections`) and a shared Trulioo-inspired theme from
+`src/ui_theme.py`. The supplied light-green Trulioo wordmark is stored in
+`assets/` and displayed consistently in the sidebar.
+
+## Developer handoff export
+
+Every downloaded workbook includes a `Developer Script` worksheet containing
+unique finalized mappings, country-enum validation, template status, and a
+generated constructor line when the field format is configured. The UI also
+offers a separate `.cs` download when at least one line is ready.
+
+The user-provided format configures the `~value~` delimiters and supplies
+`BusinessTypeStandardization` as the initial example. Every supported field now
+has a clearly labeled provisional constructor name so complete scripts can be
+demonstrated before the developer contract is finalized. These names can be
+changed in one configuration map later. The formatting example is never used as
+mapping evidence.
+
+The category names are read from `src/fields.py`, and automated tests require
+every configured category to have matching guidance. The older external Word
+definitions document is intentionally not embedded because it contains rules
+that no longer match the reviewed classifier behavior.
+
 ## Layout
 
 ```
