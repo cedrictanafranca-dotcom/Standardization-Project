@@ -46,7 +46,9 @@ STANDARD_FIELD_MAP: dict[str, str] = {
     "designation": "positions_designations",
     "position": "positions_designations",
     "business legal form": "business_legal_form",
+    "universal business legal form": "business_legal_form",
     "business status": "business_status",
+    "universal business status": "business_status",
     "brn type": "brn_type",
     "psc beneficiary type": "psc_beneficiary_type",
     "directors officers type": "directors_officers_type",
@@ -202,23 +204,45 @@ def process_analytics_df(
     Mapping Reason / Needs Review / Review Reason) and an AnalyticsStats summary.
     """
     # Drop rows below the minimum count threshold before any processing.
-    if min_count > 0:
-        count_col = next(
-            (c for c in df.columns if str(c).strip().lower() in ("value #a", "volume")), None
-        )
-        if count_col:
-            df = df[
-                pd.to_numeric(df[count_col], errors="coerce").fillna(0) >= min_count
-            ].reset_index(drop=True)
+    count_col = next(
+        (c for c in df.columns if str(c).strip().lower() in ("value #a", "volume")), None
+    )
+    if min_count > 0 and count_col:
+        df = df[
+            pd.to_numeric(df[count_col], errors="coerce").fillna(0) >= min_count
+        ].reset_index(drop=True)
 
     ft_col = _find_col(df, "fieldtype")
     input_col = _find_col(df, "inputtext")
+    country_id_col_name = _find_col(df, "countryid")
 
     result = df.copy()
 
-    # 1. Resolve country IDs.
-    country_id_col = _find_col(df, "countryid")
-    result[RESOLVED_COUNTRY_COLUMN] = result[country_id_col].apply(resolve_country_id)
+    # 1. Resolve country IDs first — dedup must use the resolved name, not the
+    # raw countryId, because multiple countryIds can map to the same country
+    # (e.g. US state-level IDs all resolve to "United States").
+    result[RESOLVED_COUNTRY_COLUMN] = result[country_id_col_name].apply(resolve_country_id)
+
+    # 1b. Normalize fieldType names BEFORE dedup so that variants like
+    # "Standardized Position" and "Universal Position" are treated as the
+    # same field type and correctly collapsed as duplicates.
+    def _normalize_ft(v):
+        fk = resolve_field_type(str(v))
+        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
+
+    result[ft_col] = result[ft_col].apply(_normalize_ft)
+
+    # Deduplicate by (resolved country, fieldType, normalized inputText).
+    _NORM_COL = "__norm_input__"
+    result[_NORM_COL] = result[input_col].apply(_norm_key)
+    if count_col:
+        count_sums = (
+            result.groupby([RESOLVED_COUNTRY_COLUMN, ft_col, _NORM_COL], dropna=False, sort=False)[count_col]
+            .transform("sum")
+        )
+        result[count_col] = count_sums
+    result = result.drop_duplicates(subset=[RESOLVED_COUNTRY_COLUMN, ft_col, _NORM_COL], keep="first")
+    result = result.drop(columns=[_NORM_COL]).reset_index(drop=True)
 
     # Pre-populate result columns so every row gets a value.
     result[STANDARDIZED_COLUMN] = ""
@@ -293,13 +317,8 @@ def process_analytics_df(
             "stats": stats,
         })
 
-    # Normalize legacy "Standardized X" field type names to "Universal X"
-    # in the output column so the file reflects the current platform naming.
-    def _normalize_ft(v):
-        fk = resolve_field_type(str(v))
-        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
-
-    result[ft_col] = result[ft_col].apply(_normalize_ft)
+    # fieldType names were already normalized before dedup (step 1b above),
+    # so no second pass is needed here.
 
     analytics_stats = AnalyticsStats(
         total_rows=len(df),
@@ -359,10 +378,10 @@ def process_standard_multi_field_df(
     field_col = find_field_col(df)
 
     # Drop rows below the minimum count threshold.
+    count_col = next(
+        (c for c in df.columns if str(c).strip().lower() in ("volume", "value #a")), None
+    )
     if min_count > 0:
-        count_col = next(
-            (c for c in df.columns if str(c).strip().lower() in ("volume", "value #a")), None
-        )
         if count_col:
             df = df[
                 pd.to_numeric(df[count_col], errors="coerce").fillna(0) >= min_count
@@ -375,6 +394,30 @@ def process_standard_multi_field_df(
                 counts = raw_series.value_counts()
                 keep_parts.append(grp[raw_series.map(counts).fillna(0) >= min_count])
             df = pd.concat(keep_parts).sort_index().reset_index(drop=True) if keep_parts else df.iloc[0:0]
+
+    # Normalize field column names BEFORE dedup so that variants like
+    # "Standardized Position" and "Universal Position" are treated as
+    # the same field type and correctly collapsed as duplicates.
+    df = df.copy()
+
+    def _normalize_sf(v):
+        fk = resolve_standard_field(str(v))
+        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
+
+    df[field_col] = df[field_col].apply(_normalize_sf)
+
+    # Deduplicate by (field, country, normalized value).
+    _NORM_COL = "__norm_val__"
+    df[_NORM_COL] = df[value_col].apply(_norm_key)
+    dedup_keys = [field_col] + ([country_col] if country_col else []) + [_NORM_COL]
+    if count_col:
+        count_sums = (
+            df.groupby(dedup_keys, dropna=False, sort=False)[count_col]
+            .transform("sum")
+        )
+        df[count_col] = count_sums
+    df = df.drop_duplicates(subset=dedup_keys, keep="first")
+    df = df.drop(columns=[_NORM_COL]).reset_index(drop=True)
 
     result = df.copy()
     result[STANDARDIZED_COLUMN] = ""
@@ -442,12 +485,8 @@ def process_standard_multi_field_df(
             "stats": stats,
         })
 
-    # Normalize legacy "Standardized X" field type names to "Universal X".
-    def _normalize_sf(v):
-        fk = resolve_standard_field(str(v))
-        return _CANONICAL_FIELD_TYPE_NAME.get(fk, v) if fk is not None else v
-
-    result[field_col] = result[field_col].apply(_normalize_sf)
+    # Field column names were already normalized before dedup (above),
+    # so no second pass is needed here.
 
     return result, AnalyticsStats(
         total_rows=len(df),

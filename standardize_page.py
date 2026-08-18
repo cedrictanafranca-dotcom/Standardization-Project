@@ -65,6 +65,30 @@ def _norm_val(v) -> str:
     return " ".join(str(v).split())
 
 
+def _dedup_result(df: pd.DataFrame, value_col: str | None, country_col: str | None, field_col: str | None) -> pd.DataFrame:
+    """Final safety dedup: collapse rows that are identical after normalizing
+    the raw value (casefold + whitespace collapse).  Different field types or
+    countries are kept separate; only true duplicates are removed."""
+    if not value_col or value_col not in df.columns:
+        return df
+    _NORM = "__dedup_norm__"
+    from standardize_file import _norm_key
+    df = df.copy()
+    df[_NORM] = df[value_col].apply(_norm_key)
+    subset = [_NORM]
+    if field_col and field_col in df.columns:
+        subset.insert(0, field_col)
+    if country_col and country_col in df.columns:
+        subset.insert(0, country_col)
+    # Sum volume columns before dropping duplicates.
+    vol_col = next((c for c in df.columns if str(c).strip().lower() in ("volume", "value #a")), None)
+    if vol_col:
+        df[vol_col] = df.groupby(subset, dropna=False, sort=False)[vol_col].transform("sum")
+    df = df.drop_duplicates(subset=subset, keep="first")
+    df = df.drop(columns=[_NORM]).reset_index(drop=True)
+    return df
+
+
 def _render_run_summary(
     result_df: pd.DataFrame,
     value_col: str,
@@ -187,7 +211,18 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
         rr["spec"].display_name if rr.get("spec") else None
     )
 
-    st.subheader(f"Review {len(flagged_idx)} Flagged Row(s)")
+    PAGE_SIZE = 10
+    total_pages = max(1, (len(flagged_idx) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = st.number_input(
+        f"Page (1–{total_pages})",
+        min_value=1, max_value=total_pages, value=1,
+        key="review_page",
+    ) if len(flagged_idx) > PAGE_SIZE else 1
+    start = (page - 1) * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_idx = flagged_idx[start:end]
+
+    st.subheader(f"Review Flagged Rows ({start + 1}–{min(end, len(flagged_idx))} of {len(flagged_idx)})")
     st.caption(
         "These rows were classified with LOW confidence or had issues. "
         "Choose the correct value for each, then click **Confirm selections**."
@@ -196,7 +231,7 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
     with st.form("flagged_review_form"):
         selections: dict[int, str] = {}
 
-        for i, idx in enumerate(flagged_idx):
+        for i, idx in enumerate(page_idx):
             row = result_df.loc[idx]
             raw_val = _norm_val(row.get(value_col))
             country = (
@@ -293,7 +328,7 @@ def _render_flagged_review(rr: dict) -> pd.DataFrame:
                     key=f"review_sel_{idx}",
                 )
 
-            if i < len(flagged_idx) - 1:
+            if i < len(page_idx) - 1:
                 st.divider()
 
         submitted = st.form_submit_button("Confirm selections", type="primary")
@@ -625,14 +660,20 @@ field_key = FIELD_OPTIONS[0].key
 
 # ── Run settings ─────────────────────────────────────────────────────────────
 
-with st.expander("Run settings", expanded=False):
-    settings_api, settings_batch, settings_volume = st.columns(3)
-    with settings_api:
-        use_live = st.checkbox(
-            "Use real Claude API",
-            value=False,
-            help="Off by default — runs a local simulation with no API key and no cost.",
-        )
+use_live = st.checkbox(
+    "Use real Claude API",
+    value=False,
+    help="Off by default — runs a local simulation with no API key and no cost.",
+)
+
+if use_live and not config.has_real_api_key():
+    st.warning(
+        "No real ANTHROPIC_API_KEY is configured. Turn off the real API setting "
+        "to use the simulation, or configure the key before continuing."
+    )
+
+with st.expander("Advanced settings", expanded=False):
+    settings_batch, settings_volume = st.columns(2)
     with settings_batch:
         batch_size = st.number_input(
             "Batch size", min_value=1, value=100, step=10,
@@ -645,12 +686,6 @@ with st.expander("Run settings", expanded=False):
             value=50,
             step=10,
             help="Values appearing fewer times are excluded from the output.",
-        )
-
-    if use_live and not config.has_real_api_key():
-        st.warning(
-            "No real ANTHROPIC_API_KEY is configured. Turn off the real API setting "
-            "to use the simulation, or configure the key before continuing."
         )
 
     st.markdown("**Field override (advanced)**")
@@ -784,8 +819,8 @@ run_clicked = st.button("Run", type="primary", disabled=uploaded is None)
 if run_clicked and uploaded is not None and is_analytics:
     if not use_live:
         st.info(
-            "Running in **SIMULATED** mode — no API key used, no cost. "
-            "Check 'Use real Claude API' in the sidebar for real classifications."
+            "Running in **simulated** mode — no API key used, no cost. "
+            "Enable 'Use real Claude API' above for real classifications."
         )
 
     progress = st.progress(0, text="Resolving country IDs and classifying…")
@@ -883,8 +918,8 @@ if run_clicked and uploaded is not None and is_analytics:
 elif run_clicked and uploaded is not None and is_multi_standard:
     if not use_live:
         st.info(
-            "Running in **SIMULATED** mode — no API key used, no cost. "
-            "Check 'Use real Claude API' in the sidebar for real classifications."
+            "Running in **simulated** mode — no API key used, no cost. "
+            "Enable 'Use real Claude API' above for real classifications."
         )
 
     progress = st.progress(0, text="Classifying each field type…")
@@ -987,9 +1022,8 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
 
     if not use_live:
         st.info(
-            f"Running in **SIMULATED** mode (client: `{client.name}`) — no API key "
-            "used, no cost. Check 'Use real Claude API' in the sidebar once a key "
-            "is configured to get real classifications."
+            "Running in **simulated** mode — no API key used, no cost. "
+            "Enable 'Use real Claude API' above for real classifications."
         )
         if field_key not in ("positions_designations", "business_legal_form"):
             st.warning(
@@ -1020,20 +1054,35 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
             )
 
     progress.progress(30, text="Classifying (checking cache, batching new values)…")
-    # Filter single-field files by volume column or raw value occurrence count.
+    from standardize_file import _norm_key as _nk
+    _vol_col = next(
+        (c for c in df_preview.columns if str(c).strip().lower() in ("volume", "value #a")), None
+    )
+    # Filter by minimum count threshold.
     if int(min_count) > 0:
-        _vol_col = next(
-            (c for c in df_preview.columns if str(c).strip().lower() in ("volume", "value #a")), None
-        )
         if _vol_col:
             df_preview = df_preview[
                 pd.to_numeric(df_preview[_vol_col], errors="coerce").fillna(0) >= int(min_count)
             ].reset_index(drop=True)
         else:
-            from standardize_file import _norm_key as _nk
             _raw_series = df_preview[raw_col].apply(_nk)
             _counts = _raw_series.value_counts()
             df_preview = df_preview[_raw_series.map(_counts).fillna(0) >= int(min_count)].reset_index(drop=True)
+
+    # Deduplicate by (country, normalized raw value) — merge count columns.
+    _dedup_keys = ([country_col] if country_col else []) + [raw_col]
+    _NORM_COL = "__norm_val__"
+    df_preview = df_preview.copy()
+    df_preview[_NORM_COL] = df_preview[raw_col].apply(_nk)
+    _dedup_subset = ([country_col] if country_col else []) + [_NORM_COL]
+    if _vol_col:
+        _count_sums = (
+            df_preview.groupby(_dedup_subset, dropna=False, sort=False)[_vol_col]
+            .transform("sum")
+        )
+        df_preview[_vol_col] = _count_sums
+    df_preview = df_preview.drop_duplicates(subset=_dedup_subset, keep="first")
+    df_preview = df_preview.drop(columns=[_NORM_COL]).reset_index(drop=True)
 
     result_df, stats = standardize_dataframe(
         df_preview, raw_col, system_prompt, client,
@@ -1117,6 +1166,14 @@ elif run_clicked and uploaded is not None and not is_analytics and not is_multi_
 # ── Post-run display (persistent across reruns via session state) ─────────────
 _rr = st.session_state.get('run_result')
 if _rr is not None:
+    # Final safety dedup — collapse any rows that are duplicates after
+    # normalizing the raw value column (casefold + whitespace).
+    _rr['result_df'] = _dedup_result(
+        _rr['result_df'],
+        value_col=_rr.get('value_col'),
+        country_col=_rr.get('country_col'),
+        field_col=_rr.get('field_col') or _rr.get('ft_col'),
+    )
     _result_df = _render_flagged_review(_rr)
 
     if _rr.get('value_col'):
@@ -1133,11 +1190,20 @@ if _rr is not None:
         NEEDS_REVIEW_COLUMN,
         REVIEW_REASON_COLUMN,
     ]
-    st.subheader("Result")
+
+    # ── Build export file (needed for download button) ────────────────────────
+    _out_name = f"{Path(_rr['filename']).stem}_standardized.xlsx"
+    _out_path = config.OUTPUT_DIR / _out_name
+    _selected_original_default = [c for c in _rr['default_keep'] if c in _rr['original_cols']]
+
+    # We need the column selection before building the export, but we place
+    # the download button before the table. Build a temporary export using
+    # the default column set so the file is ready when the button renders;
+    # the table below uses the user's live selection.
     _selected_original = st.multiselect(
         "Columns to include in export",
         options=_rr['original_cols'],
-        default=[c for c in _rr['default_keep'] if c in _rr['original_cols']],
+        default=_selected_original_default,
         help=(
             "Standardized Value, Mapping Reason, Needs Review, and Review Reason "
             "are always included."
@@ -1147,10 +1213,6 @@ if _rr is not None:
         [c for c in _selected_original if c in _result_df.columns]
         + [c for c in _our_cols if c in _result_df.columns]
     ]
-    st.dataframe(_export_df, use_container_width=True)
-
-    _out_name = f"{Path(_rr['filename']).stem}_standardized.xlsx"
-    _out_path = config.OUTPUT_DIR / _out_name
     _developer_df = build_developer_export(
         _result_df,
         raw_col=_rr.get('value_col'),
@@ -1169,6 +1231,11 @@ if _rr is not None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    # ── Result table ──────────────────────────────────────────────────────────
+    st.subheader("Result")
+    st.dataframe(_export_df, use_container_width=True)
+
+    # ── Developer handoff export ──────────────────────────────────────────────
     with st.expander("Developer handoff export (optional)"):
         st.write(
             "The Excel download includes a **Developer Script** worksheet. It formats the final "
@@ -1200,37 +1267,74 @@ if _rr is not None:
             "best-effort placeholders for demonstration and are labeled provisional until confirmed."
         )
 
-    _render_pending_lookup_saves(_rr)
-    _render_lookup_update(_rr['field_summaries'])
-    _render_manual_lookup_add(_rr['field_summaries'])
+    # ── Lookup management ─────────────────────────────────────────────────────
+    with st.expander("Lookup management"):
+        _render_pending_lookup_saves(_rr)
+        _render_lookup_update(_rr['field_summaries'])
+        _render_manual_lookup_add(_rr['field_summaries'])
 
-    _render_submit_corrections(
-        result_df=_result_df,
-        field_key=_rr.get('field_key'),
-        field_display=_rr.get('field_display'),
-        raw_col=_rr.get('value_col'),
-        country_col=_rr.get('country_col'),
-        is_analytics=_rr['is_analytics'],
-        ft_col=_rr.get('ft_col'),
-        input_col=_rr.get('input_col'),
-    )
+    # ── Handoff & feedback ────────────────────────────────────────────────────
+    with st.expander("Handoff & feedback"):
+        _render_submit_corrections(
+            result_df=_result_df,
+            field_key=_rr.get('field_key'),
+            field_display=_rr.get('field_display'),
+            raw_col=_rr.get('value_col'),
+            country_col=_rr.get('country_col'),
+            is_analytics=_rr['is_analytics'],
+            ft_col=_rr.get('ft_col'),
+            input_col=_rr.get('input_col'),
+        )
 
-    if _rr['run_type'] == 'single_field' and _rr.get('spec'):
-        _spec = _rr['spec']
         st.subheader("Jira ticket content")
         st.caption(
             "Ready to paste into a new Jira ticket for the engineering handoff — "
-            "not a live Jira integration (that's deferred; see Section 6 of the brief)."
+            "not a live Jira integration."
         )
         _countries = find_countries(_result_df)
-        _ticket_text = build_ticket_text(_spec.display_name, _rr['value_col'], _countries, _out_name)
-        st.text_area("Ticket title + description", value=_ticket_text, height=280)
-        st.download_button(
-            "Download ticket text (.txt)",
-            data=_ticket_text,
-            file_name=f"{Path(_rr['filename']).stem}_jira_ticket.txt",
-            mime="text/plain",
-        )
+        _value_col_label = _rr.get('value_col') or "inputText"
+
+        if _rr['run_type'] == 'single_field' and _rr.get('spec'):
+            _spec = _rr['spec']
+            _ticket_text = build_ticket_text(_spec.display_name, _value_col_label, _countries, _out_name)
+            st.text_area("Ticket title + description", value=_ticket_text, height=280)
+            st.download_button(
+                "Download ticket text (.txt)",
+                data=_ticket_text,
+                file_name=f"{Path(_rr['filename']).stem}_jira_ticket.txt",
+                mime="text/plain",
+            )
+        else:
+            # Multi-field run — one ticket block per known field type.
+            _field_col = _rr.get('field_col') or _rr.get('ft_col')
+            _all_tickets: list[str] = []
+            _known_summaries = [
+                fs for fs in (_rr.get('field_summaries') or [])
+                if fs.get('known') and fs.get('field_key')
+            ]
+            for _fs in _known_summaries:
+                try:
+                    _fs_spec = fields.get(_fs['field_key'])
+                    _fs_display = _fs_spec.display_name
+                except Exception:
+                    _fs_display = _fs.get('display_name', _fs['field_key'])
+                # Countries for this specific field type.
+                if _field_col and _field_col in _result_df.columns:
+                    _ft_mask = _result_df[_field_col].astype(str).str.strip() == str(_fs['field_type']).strip()
+                    _fs_countries = find_countries(_result_df[_ft_mask])
+                else:
+                    _fs_countries = _countries
+                _t = build_ticket_text(_fs_display, _value_col_label, _fs_countries, _out_name)
+                _all_tickets.append(_t)
+                st.text_area(f"Ticket — {_fs_display}", value=_t, height=240, key=f"ticket_{_fs['field_key']}")
+            if _all_tickets:
+                _combined = "\n\n" + ("=" * 60) + "\n\n".join(_all_tickets)
+                st.download_button(
+                    "Download all tickets (.txt)",
+                    data=_combined,
+                    file_name=f"{Path(_rr['filename']).stem}_jira_tickets.txt",
+                    mime="text/plain",
+                )
 
 if uploaded is None and not st.session_state.get('run_result'):
     st.info("Upload a file to get started.")

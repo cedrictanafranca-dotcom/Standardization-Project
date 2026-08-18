@@ -215,7 +215,7 @@ def _norm_key(value) -> str:
     """Normalize a raw cell to a dedup/lookup key ("" means blank)."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
-    return " ".join(str(value).split())
+    return " ".join(str(value).casefold().split())
 
 
 # Matches system/data artifacts like MASKED_WHOIS_DATA, NULL_VALUE, NO_DATA —

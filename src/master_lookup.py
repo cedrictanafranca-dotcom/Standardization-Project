@@ -437,8 +437,8 @@ class FieldLookup:
 # ---------------------------------------------------------------------------
 
 def _norm(s: str | None) -> str:
-    """Whitespace-collapse only — matches _norm_key in standardize_file.py."""
-    return " ".join(str(s).split()) if s is not None else ""
+    """Whitespace-collapse and casefold — matches _norm_key in standardize_file.py."""
+    return " ".join(str(s).casefold().split()) if s is not None else ""
 
 
 def _similarity_key(s: str | None) -> str:
@@ -699,6 +699,27 @@ def _save_json_to_s3(cfg: dict, data: dict) -> bool:
         return False
 
 
+def _normalize_lookup_data(data: dict) -> dict:
+    """Return a copy of the lookup dict with all keys casefolded.
+
+    Deduplicates case-variant entries (last writer wins within each field/country).
+    Country-specific entries for different countries are preserved as distinct.
+    """
+    normalized: dict = {}
+    for fk, field_data in data.items():
+        consistent: dict[str, str] = {}
+        for k, v in field_data.get("consistent", {}).items():
+            consistent[_norm(k)] = v
+        by_country: dict[str, dict[str, str]] = {}
+        for ck, cd in field_data.get("by_country", {}).items():
+            nck = _norm(ck)
+            country_map = by_country.setdefault(nck, {})
+            for rk, rv in cd.items():
+                country_map[_norm(rk)] = rv
+        normalized[fk] = {"consistent": consistent, "by_country": by_country}
+    return normalized
+
+
 def merge_api_results(
     field_key: str,
     new_mappings: dict,
@@ -727,6 +748,10 @@ def merge_api_results(
     else:
         return 0
 
+    # Normalize all existing keys so case-variant duplicates are collapsed
+    # before merging new entries.
+    data = _normalize_lookup_data(data)
+
     field_data = data.get(field_key, {"consistent": {}, "by_country": {}})
     consistent = field_data.get("consistent", {})
     by_country = field_data.get("by_country", {})
@@ -734,8 +759,8 @@ def merge_api_results(
     added = 0
     for (country, raw_val), std_val in new_mappings.items():
         # Normalise keys (collapse whitespace) to match how the pipeline looks them up.
-        raw_val = " ".join(str(raw_val).split()) if raw_val else ""
-        country = " ".join(str(country).split()) if country else ""
+        raw_val = " ".join(str(raw_val).casefold().split()) if raw_val else ""
+        country = " ".join(str(country).casefold().split()) if country else ""
         if not raw_val or not std_val:
             continue
         if country_dependent and country:
@@ -798,9 +823,15 @@ def load_lookup(
         fdata = data.get(fk, {})
         reviewed = reviewed_data.get(fk, {})
         lk = FieldLookup(field_key=fk)
-        lk.consistent = fdata.get("consistent", {})
-        lk.by_country = fdata.get("by_country", {})
-        lk.reviewed_consistent = reviewed.get("consistent", {})
-        lk.reviewed_by_country = reviewed.get("by_country", {})
+        lk.consistent = {_norm(k): v for k, v in fdata.get("consistent", {}).items()}
+        lk.by_country = {
+            _norm(ck): {_norm(rk): rv for rk, rv in cd.items()}
+            for ck, cd in fdata.get("by_country", {}).items()
+        }
+        lk.reviewed_consistent = {_norm(k): v for k, v in reviewed.get("consistent", {}).items()}
+        lk.reviewed_by_country = {
+            _norm(ck): {_norm(rk): rv for rk, rv in cd.items()}
+            for ck, cd in reviewed.get("by_country", {}).items()
+        }
         lookups[fk] = lk
     return lookups
