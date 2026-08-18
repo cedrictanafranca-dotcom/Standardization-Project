@@ -178,10 +178,11 @@ with field_tab:
                     st.write(country_rule["management_terms"])
                     st.markdown("**Why this country is treated differently**")
                     st.write(country_rule["nuance"])
-                st.warning(
-                    "In the United Kingdom, Gibraltar, Ireland, and Malta, CEO, Chief Executive Officer, "
-                    "and Managing Director map to Board Member."
-                )
+                if country_rule["code"] in ("GB", "GI", "IE", "MT"):
+                    st.warning(
+                        "In this jurisdiction, CEO, Chief Executive Officer, "
+                        "and Managing Director map to Board Member."
+                    )
             else:
                 st.warning("No country-specific rules could be displayed. Contact the application owner.")
         else:

@@ -94,33 +94,33 @@ with tab_pending:
                 # Header row: field, country, date
                 col_meta, col_submitted = st.columns([3, 1])
                 with col_meta:
+                    field_badge = (
+                        f"<span style='"
+                        f"background:rgba(0,107,98,0.1);color:#006B62;font-weight:600;"
+                        f"padding:3px 10px;border-radius:20px;font-size:12px;"
+                        f"letter-spacing:0.01em'>{c['field_display']}</span>"
+                    )
+                    country_str = c['country'] or '*(no country)*'
                     st.markdown(
-                        f"**{c['field_display']}**  ·  "
-                        f"{c['country'] or '*(no country)*'}"
-                        + demo_badge
+                        f"{field_badge}&nbsp;&nbsp;{country_str}" + demo_badge,
+                        unsafe_allow_html=True,
                     )
                 with col_submitted:
                     submitted_date = c["submitted_at"][:10]
                     st.caption(f"Submitted {submitted_date} by {c['submitted_by'] or 'unknown'}")
 
                 # Before → After
-                col_val, col_arrow, col_proposed = st.columns([3, 1, 3])
-                with col_val:
-                    st.markdown(f"**Raw value:** `{c['raw_value']}`")
-                    st.markdown(
-                        f"<span style='color:#888'>Original:</span> "
-                        f"**{c['original']}**",
-                        unsafe_allow_html=True,
-                    )
-                with col_arrow:
-                    st.markdown("<div style='text-align:center;font-size:24px;padding-top:20px'>→</div>", unsafe_allow_html=True)
-                with col_proposed:
-                    st.markdown(f"&nbsp;")
-                    st.markdown(
-                        f"<span style='color:#1F6E5C'>Proposed:</span> "
-                        f"**{c['proposed']}**",
-                        unsafe_allow_html=True,
-                    )
+                st.markdown(
+                    f"<div style='font-size:0.855rem;margin:0.5rem 0'>"
+                    f"<code style='background:#F7F8FA;padding:2px 6px;border-radius:4px;font-size:0.82rem'>{c['raw_value']}</code>"
+                    f"<br/><span style='color:#5E6B74'>Original:</span> "
+                    f"<strong>{c['original']}</strong>"
+                    f"&nbsp;&nbsp;→&nbsp;&nbsp;"
+                    f"<span style='color:#006B62'>Proposed:</span> "
+                    f"<strong>{c['proposed']}</strong>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
                 # Reviewer inputs
                 note = st.text_input(
@@ -168,7 +168,7 @@ with tab_history:
         st.divider()
 
         for c in history:
-            status_color = "#1F6E5C" if c["status"] == "approved" else "#cc3333"
+            status_color = "#0D7C5F" if c["status"] == "approved" else "#DC2626"
             status_label = "Approved" if c["status"] == "approved" else "Rejected"
 
             with st.container(border=True):
@@ -181,10 +181,17 @@ with tab_history:
                     if c.get("needs_prompt_update"):
                         st.caption("⚑ Prompt update")
                 with col_detail:
+                    field_badge = (
+                        f"<span style='"
+                        f"background:rgba(0,107,98,0.1);color:#006B62;font-weight:600;"
+                        f"padding:2px 8px;border-radius:20px;font-size:12px;"
+                        f"letter-spacing:0.01em'>{c['field_display']}</span>"
+                    )
                     st.markdown(
-                        f"**{c['field_display']}** · {c['country'] or '*(any)*'} · "
+                        f"{field_badge} &nbsp;{c['country'] or '*(any)*'} · "
                         f"`{c['raw_value']}` · "
-                        f"~~{c['original']}~~ → **{c['proposed']}**"
+                        f"~~{c['original']}~~ → **{c['proposed']}**",
+                        unsafe_allow_html=True,
                     )
                     meta = f"Submitted by {c['submitted_by'] or 'unknown'} on {c['submitted_at'][:10]}"
                     if c.get("reviewed_at"):
